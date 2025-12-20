@@ -45,3 +45,8 @@ SOUND_THINKING = os.path.join(SOUNDS_DIR, "ui_loading.ogg")
 SOUND_SUCCESS = os.path.join(SOUNDS_DIR, "state-change_confirm-up.ogg")
 SOUND_ERROR = os.path.join(SOUNDS_DIR, "alert_error-03.ogg")
 ALARM_SOUND = os.path.join(SOUNDS_DIR, "alarm_gentle.ogg")
+
+#  --- LOCATION SETTINGS ---
+# Biederstein: 48.1662948905428, 11.596001304713784
+MY_LAT = 48.1662948905428
+MY_LNG = 11.596001304713784
