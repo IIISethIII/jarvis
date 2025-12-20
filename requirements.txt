@@ -1,0 +1,6 @@
+requests
+python-dotenv
+pyaudio
+pvporcupine
+pvcobra
+# Note: 'aiy' package depends on the specific Google AIY hardware/image

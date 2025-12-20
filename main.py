@@ -1,0 +1,210 @@
+# jarvis/main.py
+import struct
+import time
+import wave
+import threading
+import pyaudio
+import pvporcupine
+import pvcobra
+from aiy.board import Board
+from aiy.leds import Leds, Color, Pattern
+
+from jarvis import config, state
+from jarvis.services import system, timer, ha, google
+from jarvis.core import llm
+
+def fade_color(leds, start_color, end_color, duration=0.5):
+    """
+    Erzeugt einen weichen Farbübergang (Crossfade).
+    Dauer ca. 0.5 Sekunden für einen geschmeidigen Effekt.
+    """
+    steps = 25
+    delay = duration / steps
+    
+    r1, g1, b1 = start_color
+    r2, g2, b2 = end_color
+        
+    for i in range(steps + 1):
+        factor = i / steps
+        r = int(r1 + (r2 - r1) * factor)
+        g = int(g1 + (g2 - g1) * factor)
+        b = int(b1 + (b2 - b1) * factor)
+        leds.update(Leds.rgb_on((r, g, b)))
+        time.sleep(delay)
+
+def lower_volume():
+    """Senkt die Lautstärke über den regulären Media-Player-Service ab und speichert den vorherigen Wert."""
+    volume = None
+    try:
+        headers = {"Authorization": "Bearer " + config.HA_TOKEN}
+        r = ha.session.get(f"{config.HA_URL}/api/states/sensor.hifiberry_plexamp_volume", headers=headers, timeout=2)
+        if r.status_code == 200:
+            volume = float(r.json()['state'])
+        else:
+            print(f" [Volume Error] Sensor Antwort: {r.status_code}")
+    except Exception as e:
+        print(f" [Volume Error] Sensor konnte nicht gelesen werden: {e}")
+    
+    state.PREVIOUS_VOLUME = volume
+    if state.PREVIOUS_VOLUME is not None:
+        ha.execute_media_control(command="volume_set", volume_level=state.PREVIOUS_VOLUME/2)
+
+
+def restore_volume():
+    """Stellt die Lautstärke über den regulären Media-Player-Service wieder her."""
+    if state.PREVIOUS_VOLUME is not None:
+        ha.execute_media_control(command="volume_set", volume_level=state.PREVIOUS_VOLUME)
+
+def main():
+    system.init_audio_settings()
+    
+    # Start Timer Thread
+    threading.Thread(target=timer.background_timer_check, daemon=True).start()
+
+    try:
+        porcupine = pvporcupine.create(access_key=config.PICOVOICE_KEY, keywords=[config.WAKE_WORD])
+        cobra = pvcobra.create(access_key=config.PICOVOICE_KEY)
+    except Exception as e:
+        print(f"Picovoice Init Error: {e}"); return
+
+    with Board() as board, Leds() as leds:
+        # Fetch Home Assistant Devices
+        fetched_devices = ha.fetch_ha_entities()
+        state.AVAILABLE_LIGHTS.clear()
+        state.AVAILABLE_LIGHTS.update(fetched_devices)
+        print(f" [HA] Gefundene Geräte: {list(state.AVAILABLE_LIGHTS.keys())}")
+
+        # Hardware Button mit visuellem Feedback (Grün)
+        def on_button_press():
+            # Prüfen ob ein Alarm klingelt oder Timer in der Liste sind
+            if state.ALARM_PROCESS or state.ACTIVE_TIMERS:
+                timer.stop_alarm_sound() # Stoppt Sound und löscht Timer-Liste
+                print(" [Button] Alarm/Timer manuell gestoppt.")
+                
+                # Visuelles Feedback: Kurzes grünes Aufleuchten
+                leds.update(Leds.rgb_on(Color.GREEN))
+                time.sleep(2)
+                leds.update(Leds.rgb_off())
+
+        board.button.when_pressed = on_button_press
+
+        pa = pyaudio.PyAudio()
+        stream = pa.open(rate=config.RATE, channels=config.CHANNELS, format=pyaudio.paInt16, 
+                         input=True, frames_per_buffer=porcupine.frame_length)
+        
+        print(f"\nJarvis Online | Devices: {len(state.AVAILABLE_LIGHTS)}")
+        google.speak_text(leds, "Ich bin jetzt online. Wie kann ich helfen?", stream)
+        #google.speak_text_gemini(leds, "Ich bin jetzt online. Wie kann ich helfen?")
+
+        try:
+            while True:
+                # --- SESSION ACTIVE (Cobra VAD) ---
+                if state.session_active():
+                    current_brightness = 0.4
+                    target_brightness = 0.4
+                    leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
+
+                    leds.update(Leds.rgb_on(config.DIM_PURPLE))
+                    frames = []
+                    is_speaking = False
+                    speech_consecutive = 0
+                    start_time = time.time()
+                    silence_start = None
+
+                    while True: # VAD Loop
+                        pcm = stream.read(cobra.frame_length, exception_on_overflow=False)
+                        frames.append(pcm)
+                        prob = cobra.process(struct.unpack_from("h" * cobra.frame_length, pcm))
+
+                        if prob > 0.10:
+                            target_brightness = 0.85 # goal: bright when speaking
+                        else:
+                            target_brightness = 0.4 # goal: dim when silent
+
+                        # stepwise adjustment of brightness
+                        step = 0.15
+                        if current_brightness < target_brightness:
+                            current_brightness = min(target_brightness, current_brightness + step)
+                        elif current_brightness > target_brightness:
+                            current_brightness = max(target_brightness, current_brightness - step)
+                        
+                        # LED update only if significant change
+                        if abs(current_brightness - target_brightness) > 0.01 or step > 0:
+                             leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
+                        
+                        if prob > 0.10:
+                            speech_consecutive += 1
+
+                            if speech_consecutive >= 2: 
+                                is_speaking = True
+                                silence_start = None
+                        else:
+                            speech_consecutive = 0
+
+                            if is_speaking:
+                                if not silence_start: silence_start = time.time()
+                                elif time.time() - silence_start > 1.5: break # Silence detected
+                            elif time.time() - start_time > 8.0: break # Timeout
+
+                    if is_speaking:
+                        restore_volume()
+                        
+                        leds.pattern = Pattern.breathe(1000)
+                        leds.update(Leds.rgb_pattern(config.DIM_BLUE))
+
+                        if len(frames) > 20:
+                            try:
+                                fresh = ha.fetch_ha_entities()
+                                if fresh: state.AVAILABLE_LIGHTS.update(fresh)
+                            except: pass
+
+                            with wave.open("/tmp/req.wav", 'wb') as wf:
+                                wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
+                                wf.writeframes(b''.join(frames))
+                            
+                            with open("/tmp/req.wav", "rb") as f:
+                                # llm.ask_gemini setzt intern auch nochmal breathe(), das passt.
+                                response = llm.ask_gemini(leds, None, f.read())
+                            
+                            clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
+                            
+                            google.speak_text(leds, clean_res, stream)
+                            
+                            if "<SESSION:KEEP>" in response:
+                                fade_color(leds, config.DIM_BLUE, config.DIM_PURPLE)
+                                lower_volume()
+                                state.open_session(8)
+                            else:
+                                state.SESSION_OPEN_UNTIL = 0
+                                leds.update(Leds.rgb_off())
+                    else:
+                        restore_volume()
+                        state.SESSION_OPEN_UNTIL = 0 
+                        leds.update(Leds.rgb_off())
+                        print(" [Session] Closed (Silence)")
+
+                    continue
+
+                leds.update(Leds.rgb_off()) # this is needed at reboot
+                
+                pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
+                if porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm)) >= 0:
+                    print("\n--> Wake Word Detectedd")
+                    lower_volume()
+
+                    if state.ALARM_PROCESS:
+                        timer.stop_alarm_sound()
+                        google.speak_text(leds, "Wecker gestoppt.", stream)
+                        leds.update(Leds.rgb_off())
+                        restore_volume()
+                        continue
+                    
+                    state.open_session(8)
+
+        except KeyboardInterrupt: pass
+        finally:
+            leds.update(Leds.rgb_off())
+            stream.close(); pa.terminate(); porcupine.delete(); cobra.delete()
+
+if __name__ == "__main__":
+    main()
