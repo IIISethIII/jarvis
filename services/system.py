@@ -2,6 +2,12 @@
 import os
 import subprocess
 import time
+import io
+import sys
+import math
+import datetime
+import requests
+import random
 
 def init_audio_settings():
     """Sets ALSA settings optimized for your specific setup."""
@@ -50,3 +56,33 @@ def restart_service():
     except Exception as e:
         print(f" [RESTART ERROR] {e}")
         return f"Fehler: {e}"
+    
+def run_local_python(code):
+    """Runs Python code in a safe local environment and captures the output."""
+    print(f"  [Python Tool] Executing:\n{code}")
+    
+    buffer = io.StringIO()
+    sys.stdout = buffer
+    
+    safe_globals = {
+        "math": math,
+        "datetime": datetime,
+        "requests": requests, 
+        "random": random,
+        "__builtins__": __builtins__
+    }
+    
+    try:
+        exec(code, safe_globals)
+        output = buffer.getvalue()
+        
+        if not output.strip():
+            return "Code ausgeführt, aber keine Ausgabe. Hast du print() vergessen?"
+            
+        return output.strip()
+        
+    except Exception as e:
+        return f"Python Fehler: {str(e)}"
+        
+    finally:
+        sys.stdout = sys.__stdout__
