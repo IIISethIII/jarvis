@@ -50,3 +50,7 @@ ALARM_SOUND = os.path.join(SOUNDS_DIR, "alarm_gentle.ogg")
 # Biederstein: 48.1662948905428, 11.596001304713784
 MY_LAT = 48.1662948905428
 MY_LNG = 11.596001304713784
+
+#  --- MEMORY PATHS ---
+MEMORY_FILE = os.path.join(BASE_DIR, "memory_data.json")
+VECTOR_FILE = os.path.join(BASE_DIR, "memory_vectors.npy")
