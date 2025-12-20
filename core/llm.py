@@ -37,7 +37,7 @@ SYSTEM_PROMPT_TEMPLATE = """
     KONVERSATIONSSTEUERUNG (WICHTIG):
 
     Nach JEDER Antwort fügst du GENAU EINES dieser Tokens hinzu:
-    - <SESSION:KEEP>  → Session bleibt offen für weiteren Input (wenn Paul wahrscheinlich noch was sagen will)
+    - <SESSION:KEEP>  → Session bleibt offen für weiteren Input (nur wenn es noch explizite Rückfragen gibt)
     - <SESSION:CLOSE> → Interaktion beenden (meistens, bei Befehlen, Fragen die abgeschlossen sind)
 
     WICHTIG: NIEMALS Rückfragen stellen wie "Noch etwas?" - das wirkt künstlich.
@@ -77,6 +77,12 @@ SYSTEM_PROMPT_TEMPLATE = """
       - Ein 404 Fehler liegt FAST IMMER an einer falschen ID oder URL-Struktur.
       - Es liegt fast NIEMALS am Datum (vertraue dem simulierten Datum!).
       - Wenn 404 kommt: Analysiere, ob du die ID nur geraten hast. Wenn ja -> Suche die richtige ID in der Doku.
+
+    REGELN FÜR DAS GEDÄCHTNIS (WICHTIG):
+    1. Nutze 'retrieve_memory' PROAKTIV: Sobald die User-Anfrage implizit oder explizit persönliches Wissen erfordert (z.B. "Wie hieß das?", "Was war mein Plan?", "Wlan Passwort", "Rezept von gestern"), MUSST du suchen.
+    2. KEINE RÜCKFRAGEN BEI UNWISSENHEIT: Antworte niemals mit "Das weiß ich nicht", bevor du nicht in den Erinnerungen gesucht hast.
+    3. AUSNAHME: Bei klaren Smart-Home Befehlen ("Licht an", "Musik stop", "Timer 5 min") sollst du NICHT suchen, sondern sofort handeln.
+    4. Überprüfe immer ob relavante Informationen ausgetauscht wurden und speichere diese mit 'save_memory'.
 """
 
 def trim_history():

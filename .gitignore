@@ -8,6 +8,10 @@ __pycache__/
 .env
 .env.local
 
+# data files
+*.json
+*.npy
+
 # System/IDE
 .DS_Store
 .vscode/

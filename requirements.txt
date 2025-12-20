@@ -4,4 +4,5 @@ pyaudio
 pvporcupine
 pvcobra
 pygame
+numpy
 # Note: 'aiy' package depends on the specific Google AIY hardware/image

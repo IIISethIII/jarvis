@@ -1,9 +1,31 @@
 # jarvis/core/tools.py
-from jarvis.services import ha, system, timer, google, sfx
+from jarvis.services import ha, system, timer, google, sfx, memory
 from jarvis import config
 
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
+    {
+        "name": "save_memory",
+        "description": "Speichert wichtige Fakten, Vorlieben oder Informationen über den User langfristig ab. Nutze dies, wenn der User sagt 'Merk dir das'.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "text": { "type": "STRING", "description": "Der Fakt (z.B. 'Paul trinkt Kaffee schwarz')." }
+            },
+            "required": ["text"]
+        }
+    },
+    {
+        "name": "retrieve_memory",
+        "description": "Sucht aktiv im Langzeitgedächtnis. Nutze dies bei Fragen nach Wissen ('WLAN Code?') ODER bei Begrüßungen ('Guten Morgen'), um User-Routinen zu checken.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "search_query": { "type": "STRING", "description": "Suchbegriff (z.B. 'WLAN Passwort', 'Morgen Routine')." }
+            },
+            "required": ["search_query"]
+        }
+    },
     {
         "name": "execute_python_code",
         "description": "Führt Python-Code lokal aus. Nutze dies IMMER für mathematische Berechnungen, Datums-Logik oder komplexe Listen-Operationen. Schreibe das Ergebnis mit print() in den Output. WICHTIG: Gib den Code als String zurück, NICHT als Markdown-Block.",
@@ -188,6 +210,8 @@ TOOL_IMPLEMENTATIONS = {
     'perform_google_search': google.perform_google_search_internal,
     'search_google_maps': google.perform_maps_search,
     'execute_python_code': system.run_local_python,
+    'save_memory': memory.save_memory,
+    'retrieve_memory': memory.retrieve_relevant_memories,
 }
 
 def execute_tool(name, args):
