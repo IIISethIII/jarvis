@@ -23,12 +23,9 @@ CHUNK_SIZE = 512
 VOLUME_STEP = 3
 
 # --- VISUALS ---
-DIM_BLUE = Color.blend(Color.BLUE, Color.BLACK, 0.3)
-DIM_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.4)
-
-# Lila: Zuhören
-DIM_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.4)     # Warten auf Input
-BRIGHT_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.8)
+DIM_BLUE = Color.blend(Color.BLUE, Color.BLACK, 0.2)
+DIM_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.1)     # higher number = dimmer
+BRIGHT_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.5)
 
 # --- SAFETY SETTINGS ---
 SAFETY_SETTINGS = [
@@ -38,3 +35,13 @@ SAFETY_SETTINGS = [
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
     {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "BLOCK_NONE"}
 ]
+
+# --- PFADE ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SOUNDS_DIR = os.path.join(BASE_DIR, "assets/sounds") # you may need to adjust this path
+
+SOUND_WAKE = os.path.join(SOUNDS_DIR, "navigation_forward-selection.ogg")
+SOUND_THINKING = os.path.join(SOUNDS_DIR, "ui_loading.ogg")
+SOUND_SUCCESS = os.path.join(SOUNDS_DIR, "state-change_confirm-up.ogg")
+SOUND_ERROR = os.path.join(SOUNDS_DIR, "alert_error-03.ogg")
+ALARM_SOUND = os.path.join(SOUNDS_DIR, "alarm_gentle.ogg")

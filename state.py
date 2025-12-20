@@ -7,6 +7,9 @@ import time
 CONVERSATION_HISTORY = deque()
 HISTORY_LOCK = threading.Lock()
 
+# LED State
+LED_LOCKED = False
+
 # Device Awareness
 AVAILABLE_LIGHTS = {}
 

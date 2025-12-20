@@ -1,11 +1,12 @@
 # jarvis/core/tools.py
-from jarvis.services import ha, system, timer, google
+from jarvis.services import ha, system, timer, google, sfx
+from jarvis import config
 
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
     {
         "name": "control_light",
-        "description": "Schaltet Lichter oder Schalter an oder aus.",
+        "description": "Schaltet Lichter oder Schalter an oder aus. Ohne Lampen-Name wird alles gesteuert.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -168,6 +169,8 @@ def execute_tool(name, args):
     if name in TOOL_IMPLEMENTATIONS:
         try:
             result = TOOL_IMPLEMENTATIONS[name](**args)
+            if not name.startswith("get_") and name != "perform_google_search":
+                sfx.play(config.SOUND_SUCCESS)
             print(f"  [DEBUG] Tool Result: {result}")
             return result
         except Exception as e:
