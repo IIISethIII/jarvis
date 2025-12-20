@@ -3,7 +3,7 @@ import base64
 import time
 import wave
 from aiy.leds import Leds
-from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, GEMINI_URL
+from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, GEMINI_URL, MY_LAT, MY_LNG
 from jarvis.utils import session
 from jarvis.services import sfx
 
@@ -111,3 +111,37 @@ def perform_google_search_internal(query):
         return f"Fehler bei der Suche: {response.status_code}"
     except Exception as e:
         return f"Verbindungsfehler: {e}"
+    
+def perform_maps_search(query):
+    """Führt eine Google Maps Suche mit explizitem Standort-Kontext aus."""
+    print(f"  [Maps] Searching: {query}")
+
+    payload = {
+        "contents": [{"parts": [{"text": query}]}],
+        "tools": [{"googleMaps": {}}],
+        "toolConfig": {
+            "retrievalConfig": {
+                "latLng": {
+                    "latitude": MY_LAT,
+                    "longitude": MY_LNG
+                }
+            }
+        }
+    }
+    
+    try:
+        response = session.post(GEMINI_URL, json=payload, timeout=30)
+        
+        if response.status_code == 200:
+            result = response.json()
+            try:
+                return result['candidates'][0]['content']['parts'][0]['text']
+            except (KeyError, IndexError):
+                return "Ich konnte dazu nichts auf der Karte finden."
+        
+        print(f"  [Maps Error] {response.status_code}")
+        return f"Fehler bei der Suche: {response.status_code}"
+        
+    except Exception as e:
+        print(f"  [Maps Exception] {e}")
+        return "Verbindungsfehler."

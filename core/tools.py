@@ -5,6 +5,17 @@ from jarvis import config
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
     {
+        "name": "search_google_maps",
+        "description": "Sucht nach Orten, Adressen, Entfernungen, Öffnungszeiten oder Navigation auf Google Maps.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": { 
+                "query": { "type": "STRING", "description": "Was gesucht werden soll (z.B. 'nächster Italiener', 'Weg zum Bahnhof')" } 
+            },
+            "required": ["query"]
+        }
+    },
+    {
         "name": "control_light",
         "description": "Schaltet Lichter oder Schalter an oder aus. Ohne Lampen-Name wird alles gesteuert.",
         "parameters": {
@@ -160,7 +171,8 @@ TOOL_IMPLEMENTATIONS = {
     'manage_timer_alarm': timer.manage_timer_alarm,
     'restart_service': system.restart_service,
     'set_system_volume': system.set_system_volume,
-    'perform_google_search': google.perform_google_search_internal
+    'perform_google_search': google.perform_google_search_internal,
+    'search_google_maps': google.perform_maps_search,
 }
 
 def execute_tool(name, args):
