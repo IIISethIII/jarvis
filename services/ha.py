@@ -29,18 +29,20 @@ def fetch_ha_entities():
         print(f"[HA Error] {e}")
     return {}
 
-def execute_light_control(state, lamp_name="ALLE"):
+def execute_light_control(state, lamp_name="ALL"):
     target_entities = []
     
-    if lamp_name.upper() in ["ALLE", "ALL", "ALLES"]:
-        target_entities = [eid for _, eid in global_state.AVAILABLE_LIGHTS.items() if eid.startswith(("light.", "switch."))]
-        device_desc = "alle Lampen"
-    else:
+    for name, eid in global_state.AVAILABLE_LIGHTS.items():
+        if lamp_name.lower() in name.lower() or name.lower() in lamp_name.lower():
+            target_entities.append(eid)
+            device_desc = lamp_name
+            break
+
+    # if no specific lamp found, control all
+    if not target_entities and lamp_name == "ALL":
         for name, eid in global_state.AVAILABLE_LIGHTS.items():
-            if lamp_name.lower() in name.lower() or name.lower() in lamp_name.lower():
+            if eid.startswith("light.") or eid.startswith("switch."):
                 target_entities.append(eid)
-                device_desc = lamp_name
-                break
     
     if not target_entities: return f"Gerät '{lamp_name}' nicht gefunden."
     

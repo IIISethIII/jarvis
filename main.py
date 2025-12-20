@@ -10,7 +10,7 @@ from aiy.board import Board
 from aiy.leds import Leds, Color, Pattern
 
 from jarvis import config, state
-from jarvis.services import system, timer, ha, google
+from jarvis.services import system, timer, ha, google, sfx
 from jarvis.core import llm
 
 def fade_color(leds, start_color, end_color, duration=0.5):
@@ -57,6 +57,8 @@ def restore_volume():
 
 def main():
     system.init_audio_settings()
+
+    sfx.init()
     
     # Start Timer Thread
     threading.Thread(target=timer.background_timer_check, daemon=True).start()
@@ -76,15 +78,17 @@ def main():
 
         # Hardware Button mit visuellem Feedback (Grün)
         def on_button_press():
-            # Prüfen ob ein Alarm klingelt oder Timer in der Liste sind
             if state.ALARM_PROCESS or state.ACTIVE_TIMERS:
-                timer.stop_alarm_sound() # Stoppt Sound und löscht Timer-Liste
-                print(" [Button] Alarm/Timer manuell gestoppt.")
-                
-                # Visuelles Feedback: Kurzes grünes Aufleuchten
+                timer.stop_alarm_sound()
+                state.LED_LOCKED = True 
+                leds.update(Leds.rgb_on(Color.RED))
+                time.sleep(1)
+                state.LED_LOCKED = False
+            else:
+                state.LED_LOCKED = True 
                 leds.update(Leds.rgb_on(Color.GREEN))
-                time.sleep(2)
-                leds.update(Leds.rgb_off())
+                time.sleep(0.2)
+                state.LED_LOCKED = False
 
         board.button.when_pressed = on_button_press
 
@@ -148,6 +152,8 @@ def main():
 
                     if is_speaking:
                         restore_volume()
+
+                        sfx.play_loop(config.SOUND_THINKING)
                         
                         leds.pattern = Pattern.breathe(1000)
                         leds.update(Leds.rgb_pattern(config.DIM_BLUE))
@@ -162,9 +168,14 @@ def main():
                                 wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
                                 wf.writeframes(b''.join(frames))
                             
-                            with open("/tmp/req.wav", "rb") as f:
-                                # llm.ask_gemini setzt intern auch nochmal breathe(), das passt.
-                                response = llm.ask_gemini(leds, None, f.read())
+                            response = "Fehler."
+                            try:
+                                with open("/tmp/req.wav", "rb") as f:
+                                    response = llm.ask_gemini(leds, None, f.read())
+                            except Exception as e:
+                                print(f"LLM Error: {e}")
+                            finally:
+                                sfx.stop_loop()
                             
                             clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
                             
@@ -173,6 +184,7 @@ def main():
                             if "<SESSION:KEEP>" in response:
                                 fade_color(leds, config.DIM_BLUE, config.DIM_PURPLE)
                                 lower_volume()
+                                sfx.play(config.SOUND_WAKE)
                                 state.open_session(8)
                             else:
                                 state.SESSION_OPEN_UNTIL = 0
@@ -185,15 +197,28 @@ def main():
 
                     continue
 
-                leds.update(Leds.rgb_off()) # this is needed at reboot
+                if state.ALARM_PROCESS:
+                    leds.pattern = Pattern.breathe(1000)
+                    leds.update(Leds.rgb_pattern(config.DIM_BLUE))
+
+                elif state.LED_LOCKED:
+                    pass 
+
+                else:
+                    leds.update(Leds.rgb_off())
                 
                 pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
                 if porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm)) >= 0:
                     print("\n--> Wake Word Detectedd")
+                    sfx.play(config.SOUND_WAKE)
                     lower_volume()
 
                     if state.ALARM_PROCESS:
                         timer.stop_alarm_sound()
+                        state.LED_LOCKED = True 
+                        leds.update(Leds.rgb_on(Color.RED))
+                        time.sleep(1)
+                        state.LED_LOCKED = False
                         google.speak_text(leds, "Wecker gestoppt.", stream)
                         leds.update(Leds.rgb_off())
                         restore_volume()

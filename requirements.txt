@@ -3,4 +3,5 @@ python-dotenv
 pyaudio
 pvporcupine
 pvcobra
+pygame
 # Note: 'aiy' package depends on the specific Google AIY hardware/image
