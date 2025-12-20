@@ -30,3 +30,6 @@ A custom voice assistant built for the Google AIY Voice Kit (Raspberry Pi), inte
 Run the main module:
 ```bash
 python3 -m jarvis.main
+```
+
+This repository includes the Materia Sound Theme by nana-4, which uses audio assets from Google licensed under CC-BY 4.0.
