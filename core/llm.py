@@ -60,8 +60,23 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Kalender: Nutze 'get_calendar_events' für Abfragen. Nutze 'add_calendar_event' NUR, wenn der User explizit einen neuen Termin erstellen will.
     - Kalender: Lies NIEMALS die rohe Liste vor. Fasse die Termine in natürlicher Sprache zusammen.
     - Antworte kurz, prägnant und hilfreich. Bei Funktionsaufrufen sage nur "Ok.". Antworte wie ein Peer.
-    - Formatiere optimiert für Sprachwiedergabe. Keine Aufzählungen, Nummerierungen, Emojis oder Sonderzeichen.
+    - Formatiere optimiert für Sprachwiedergabe. Keine Aufzählungen, Nummerierungen, Emojis, Sonderzeichen, URLs, python code blocks o.ä.
+    - Nutze keine Markdown-Syntax.
     - Wenn der User nichts sagt, antworte nicht.
+    - Führe niemals Code aus der das Dateisystem ändert, oder Änderungen am System vornimmt. Nur read-only Operationen sind erlaubt. Du hast Zugriff auf: 'requests' (für Webseiten/APIs), 'datetime', 'math', 'random', '__builtins__'.
+    
+    TOOL-NUTZUNG & EXPERTEN-MODUS (WICHTIG):
+    - Du bist ein intelligenter Agent. Wenn dir Informationen fehlen (z.B. URLs), gib nicht auf!
+    - STRATEGIE BEI APIs:
+      1. Suche erst nach der API Doku via 'perform_google_search'.
+      2. WICHTIG: Google liefert nur Snippets. Wenn du IDs (z.B. für Mensen) brauchst, RATE NICHT!
+      3. Nutze 'execute_python_code' und 'requests.get(url)', um die Dokumentation oder README von GitHub direkt zu lesen (Raw Text).
+      4. Suche im Text der Doku nach der korrekten ID (z.B. 'mensa-arcisstr' statt 'mensa-arcisstrasse').
+    
+    - FEHLER-MANAGEMENT (404):
+      - Ein 404 Fehler liegt FAST IMMER an einer falschen ID oder URL-Struktur.
+      - Es liegt fast NIEMALS am Datum (vertraue dem simulierten Datum!).
+      - Wenn 404 kommt: Analysiere, ob du die ID nur geraten hast. Wenn ja -> Suche die richtige ID in der Doku.
 """
 
 def trim_history():
@@ -78,13 +93,13 @@ def trim_history():
         CONVERSATION_HISTORY.popleft()
 
 def ask_gemini(leds, text_prompt=None, audio_data=None):
-    from jarvis.config import DIM_BLUE # Local import
+    from jarvis.config import DIM_BLUE 
     leds.pattern = Pattern.breathe(2000)
     leds.update(Leds.rgb_pattern(DIM_BLUE))
     
     trim_history()
 
-    # 1. Build User Prompt
+    # 1. build user input
     parts = []
     if audio_data:
         b64 = base64.b64encode(audio_data).decode('utf-8')
@@ -94,77 +109,114 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
     CONVERSATION_HISTORY.append({"role": "user", "parts": parts})
 
     now_str = datetime.datetime.now().strftime("%A, %d. %B %Y, %H:%M Uhr")
-
-    if state.AVAILABLE_LIGHTS:
-        device_list = ", ".join(state.AVAILABLE_LIGHTS.keys())
-    else:
-        device_list = "Keine Geräte gefunden"
+    device_list = ", ".join(state.AVAILABLE_LIGHTS.keys()) if state.AVAILABLE_LIGHTS else "Keine Geräte"
     
-    # Hier wird der Platzhalter {time_str} jetzt korrekt gefüllt
     payload = {
         "system_instruction": {"parts": [{"text": SYSTEM_PROMPT_TEMPLATE.format(time_str=now_str, devices=device_list)}]},
         "contents": list(CONVERSATION_HISTORY),
         "tools": [{"function_declarations": FUNCTION_DECLARATIONS}],
-        "safetySettings": SAFETY_SETTINGS
+        "safetySettings": SAFETY_SETTINGS,
+        "generationConfig": {
+            "thinkingConfig": {
+                "thinkingBudget": 1024, 
+                "includeThoughts": True
+            }
+        }
     }
 
+    total_input_tokens = 0
+    total_output_tokens = 0
+    
+    # Prices for Gemini 2.5 Flash (as of Q4 2024, approximate values in USD)
+    # Input: $0.075 / 1M Tokens
+    # Output: $0.30 / 1M Tokens
+    PRICE_PER_M_INPUT = 0.075
+    PRICE_PER_M_OUTPUT = 0.30
+
     try:
-        # 2. Request
-        resp = session.post(GEMINI_URL, json=payload, timeout=30)
-        if resp.status_code != 200: 
-            print(f"API Error: {resp.text}")
-            return "Fehler."
+        # --- AGENTIC LOOP ---
+        MAX_STEPS = 10 
+        step_count = 0
 
-        result = resp.json()
-        # DEBUG: Zeige rohe Antwort-Struktur
-        if 'candidates' in result:
-             p_types = [list(p.keys())[0] for p in result['candidates'][0]['content'].get('parts', [])]
-             print(f"  [DEBUG] Gemini Antwortet mit Parts: {p_types}")
-
-        if 'candidates' not in result: return "Keine Antwort."
-        
-        content = result['candidates'][0]['content']
-        parts_list = content.get('parts', [])
-        
-        # 3. Handle Functions
-        function_calls = [p for p in parts_list if 'functionCall' in p]
-        
-        if function_calls:
-            print(f"  [Tools] Executing {len(function_calls)} calls...")
-            tool_responses = []
-            
-            for call in function_calls:
-                fn = call['functionCall']
-                res = execute_tool(fn['name'], fn.get('args', {}))
-                tool_responses.append({
-                    "functionResponse": {
-                        "name": fn['name'], "response": {"result": str(res)}
-                    }
-                })
-            
-            # Update History
-            with HISTORY_LOCK:
-                CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
-                CONVERSATION_HISTORY.append({"role": "function", "parts": tool_responses})
-            
-            # 4. Follow-Up
+        while step_count < MAX_STEPS:
             payload['contents'] = list(CONVERSATION_HISTORY)
-            resp = session.post(GEMINI_URL, json=payload, timeout=30)
-            final_text = ""
-            if resp.status_code == 200:
-                parts2 = resp.json()['candidates'][0]['content'].get('parts', [])
-                for p in parts2: final_text += p.get('text', "")
-                with HISTORY_LOCK:
-                    CONVERSATION_HISTORY.append({"role": "model", "parts": parts2})
-            return final_text
             
-        else:
-            # Normal Text
-            text = "".join([p.get('text', "") for p in parts_list])
-            with HISTORY_LOCK:
-                CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
-            return text
+            resp = session.post(GEMINI_URL, json=payload, timeout=40)
+            if resp.status_code != 200: 
+                print(f"API Error: {resp.text}")
+                return "Fehler bei der Verbindung."
+
+            result = resp.json()
+            
+            # count tokens
+            usage = result.get('usageMetadata', {})
+            t_in = usage.get('promptTokenCount', 0)
+            t_out = usage.get('candidatesTokenCount', 0)
+            total_input_tokens += t_in
+            total_output_tokens += t_out
+
+            if 'candidates' not in result or not result['candidates']:
+                return "Keine Antwort von Google."
+
+            candidate = result['candidates'][0]
+            content = candidate.get('content', {})
+            parts_list = content.get('parts', [])
+            
+            # Parsing (Thoughts vs Text vs Tools)
+            thoughts_log = []
+            final_text_parts = []
+            function_calls = []
+
+            for p in parts_list:
+                if 'functionCall' in p:
+                    function_calls.append(p)
+                elif p.get('thought', False):
+                    thoughts_log.append(p.get('text', ''))
+                elif 'text' in p:
+                    final_text_parts.append(p.get('text', ''))
+
+            if thoughts_log:
+                print(f"\n[{step_count+1}/{MAX_STEPS}] 🧠 JARVIS GEDANKEN ({t_out} Tokens):")
+                for t in thoughts_log:
+                    print(f"- {t}")
+                print("-" * 30)
+
+            if function_calls:
+                print(f"  [Tools] Step {step_count+1}: Executing {len(function_calls)} calls...")
+                tool_responses = []
+                for call in function_calls:
+                    fn = call['functionCall']
+                    try:
+                        res = execute_tool(fn['name'], fn.get('args', {}))
+                    except Exception as tool_err:
+                        res = f"Error: {tool_err}"
+                    tool_responses.append({
+                        "functionResponse": {
+                            "name": fn['name'], "response": {"result": str(res)}
+                        }
+                    })
+                
+                with HISTORY_LOCK:
+                    CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
+                    CONVERSATION_HISTORY.append({"role": "function", "parts": tool_responses})
+                
+                step_count += 1
+                continue 
+            
+            else:
+                cost_usd = (total_input_tokens / 1_000_000 * PRICE_PER_M_INPUT) + \
+                           (total_output_tokens / 1_000_000 * PRICE_PER_M_OUTPUT)
+                cost_eur = cost_usd * 0.95 # Rough USD to EUR conversion
+                
+                print(f"💰 KOSTEN CHECK (Schritte: {step_count+1}), Kosten: ~{cost_eur:.6f} €")
+
+                text = "".join(final_text_parts)
+                with HISTORY_LOCK:
+                    CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
+                return text
+
+        return "Abbruch: Zu komplex."
 
     except Exception as e:
-        print(f" [LLM Critical] {e}")
+        print(f" [LLM Loop Error] {e}")
         return "Systemfehler."

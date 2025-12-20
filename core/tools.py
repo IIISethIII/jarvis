@@ -5,6 +5,20 @@ from jarvis import config
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
     {
+        "name": "execute_python_code",
+        "description": "Führt Python-Code lokal aus. Nutze dies IMMER für mathematische Berechnungen, Datums-Logik oder komplexe Listen-Operationen. Schreibe das Ergebnis mit print() in den Output. WICHTIG: Gib den Code als String zurück, NICHT als Markdown-Block.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "code": { 
+                    "type": "STRING", 
+                    "description": "Der Python-Code, z.B. '3 * 5' oder 'math.sqrt(16)'. Nutze Bibliotheken wie 'math' oder 'datetime' direkt." 
+                }
+            },
+            "required": ["code"]
+        }
+    },
+    {
         "name": "search_google_maps",
         "description": "Sucht nach Orten, Adressen, Entfernungen, Öffnungszeiten oder Navigation auf Google Maps.",
         "parameters": {
@@ -173,6 +187,7 @@ TOOL_IMPLEMENTATIONS = {
     'set_system_volume': system.set_system_volume,
     'perform_google_search': google.perform_google_search_internal,
     'search_google_maps': google.perform_maps_search,
+    'execute_python_code': system.run_local_python,
 }
 
 def execute_tool(name, args):
