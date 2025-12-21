@@ -2,10 +2,59 @@ import json
 import base64
 import time
 import wave
+import io
 from aiy.leds import Leds
 from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, GEMINI_URL, MY_LAT, MY_LNG
 from jarvis.utils import session
 from jarvis.services import sfx
+
+def transcribe_audio(audio_bytes):
+    """
+    Nutzt Gemini Flash als schnellen Speech-to-Text (STT) Service.
+    Ziel: Nur den Text extrahieren, keine Antwort generieren.
+    """
+    if not audio_bytes: return ""
+
+    print("   [STT] Transkribiere Audio...")
+    
+    b64_data = base64.b64encode(audio_bytes).decode('utf-8')
+    
+    # Ein sehr strikter System-Prompt für reine Transkription
+    prompt = """
+    Transkribiere das folgende Audio exakt Wort für Wort in die Sprache, die gesprochen wird (meist Deutsch).
+    Gib NUR den Text zurück. Keine Einleitung, keine Anmerkungen, keine Zeitstempel.
+    Wenn nichts gesprochen wird, gib nichts zurück.
+    """
+
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": "audio/wav", "data": b64_data}}
+            ]
+        }],
+        "generationConfig": {
+            "temperature": 0.0, # Deterministisch für STT
+            "maxOutputTokens": 100
+        }
+    }
+
+    try:
+        # Wir nutzen hier dieselbe URL wie sonst auch (Flash ist schnell genug)
+        response = session.post(GEMINI_URL, json=payload, timeout=10)
+        if response.status_code == 200:
+            result = response.json()
+            try:
+                text = result['candidates'][0]['content']['parts'][0]['text'].strip()
+                if "LEER" in text: return ""
+                return text
+            except: return ""
+        else:
+            print(f"   [STT Error] Status: {response.status_code}")
+            return ""
+    except Exception as e:
+        print(f"   [STT Exception] {e}")
+        return ""
 
 def speak_text_gemini(leds, text, mood="normal"):
     if not text or not text.strip(): return
@@ -13,7 +62,7 @@ def speak_text_gemini(leds, text, mood="normal"):
         speak_text(leds, text)
         return
     
-    style = "Sprich wie ein entspannter 24-jähriger Münchner. Locker, casual, natürlich."
+    style = "Sprich wie ein entspannter 24-jähriger. Locker, casual, natürlich."
     print(f"   Jarvis (Gemini): {text[:50]}...")
     leds.update(Leds.rgb_on(DIM_BLUE))
     
@@ -78,7 +127,7 @@ def speak_text(leds, text, stream=None):
     }
     
     try:
-        r = session.post(url, json=payload, timeout=10)
+        r = session.post(url, json=payload, timeout=30)
         if r.status_code == 200:
             content = r.json().get('audioContent')
             if content:
@@ -90,6 +139,9 @@ def speak_text(leds, text, stream=None):
                     f.writeframes(audio_binary)
                 
                 sfx.play_blocking(tmp_file)
+
+        else:
+            print(f" [TTS API Error] Status: {r.status_code} | Response: {r.text}")
     except Exception as e:
         print(f" [TTS Exception] {e}")
 

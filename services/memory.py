@@ -73,3 +73,36 @@ def retrieve_relevant_memories(search_query, top_k=3, threshold=0.35):
         return "Keine relevanten Einträge gefunden."
         
     return "Gefundene Informationen:\n" + "\n".join(found_texts)
+
+def delete_memory(topic):
+    """Löscht den Eintrag, der am besten zum Thema passt."""
+    if not os.path.exists(VECTOR_FILE) or not os.path.exists(MEMORY_FILE):
+        return "Gedächtnis ist leer."
+
+    q_vec = get_embedding(topic)
+    if q_vec is None: return "Fehler beim Embedding."
+
+    try:
+        vectors = np.load(VECTOR_FILE)
+        with open(MEMORY_FILE, 'r', encoding='utf-8') as f:
+            memories = json.load(f)
+    except: return "Lesefehler."
+
+    scores = np.dot(vectors, q_vec)
+    best_idx = np.argmax(scores) 
+    best_score = scores[best_idx]
+
+    if best_score < 0.6: 
+        return f"Ich bin mir nicht sicher, was ich zu '{topic}' löschen soll (Kein treffender Eintrag)."
+
+    removed_text = memories[best_idx]['text']
+    
+    memories.pop(best_idx)
+    
+    vectors = np.delete(vectors, best_idx, axis=0)
+
+    with open(MEMORY_FILE, 'w', encoding='utf-8') as f:
+        json.dump(memories, f, ensure_ascii=False, indent=2)
+    np.save(VECTOR_FILE, vectors)
+
+    return f"Gelöscht: '{removed_text}'"

@@ -26,7 +26,7 @@ def get_sound(path_or_key):
     if os.path.exists(path_or_key):
         try:
             s = pygame.mixer.Sound(path_or_key)
-            s.set_volume(0.5)
+            s.set_volume(0.9)
             _sounds[path_or_key] = s
             return s
         except Exception as e:
