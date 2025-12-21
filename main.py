@@ -10,7 +10,7 @@ from aiy.board import Board
 from aiy.leds import Leds, Color, Pattern
 
 from jarvis import config, state
-from jarvis.services import system, timer, ha, google, sfx
+from jarvis.services import system, timer, ha, google, sfx, memory
 from jarvis.core import llm
 
 def fade_color(leds, start_color, end_color, duration=0.5):
@@ -160,10 +160,12 @@ def main():
 
                         if len(frames) > 20:
                             try:
+                                #  home assistant refresh devices
                                 fresh = ha.fetch_ha_entities()
                                 if fresh: state.AVAILABLE_LIGHTS.update(fresh)
                             except: pass
 
+                            # save audio to temp file
                             with wave.open("/tmp/req.wav", 'wb') as wf:
                                 wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
                                 wf.writeframes(b''.join(frames))
@@ -171,9 +173,27 @@ def main():
                             response = "Fehler."
                             try:
                                 with open("/tmp/req.wav", "rb") as f:
-                                    response = llm.ask_gemini(leds, None, f.read())
+                                    wav_data = f.read()
+
+                                # stt via google
+                                user_text = google.transcribe_audio(wav_data)
+                                print(f" --> User (STT): \"{user_text}\"")
+
+                                if user_text:
+                                    # search relevant memories via RAG
+                                    rag_context = memory.retrieve_relevant_memories(user_text)
+                                    print(f" --> RAG: {rag_context[:60]}...")
+
+                                    # build final prompt with RAG context
+                                    final_prompt = f"ZUSATZWISSEN(RAG):\n{rag_context}\n\nUSER:\n{user_text}"
+                                    
+                                    # send to LLM
+                                    response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=None)
+                                else:
+                                    response = ""
+
                             except Exception as e:
-                                print(f"LLM Error: {e}")
+                                print(f"Processing Error: {e}")
                             finally:
                                 sfx.stop_loop()
                             

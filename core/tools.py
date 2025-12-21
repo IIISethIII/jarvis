@@ -27,14 +27,28 @@ FUNCTION_DECLARATIONS = [
         }
     },
     {
+        "name": "delete_memory",
+        "description": "Löscht eine spezifische Information aus dem Langzeitgedächtnis. Nutze dies, wenn der User sagt, dass etwas falsch ist oder sich geändert hat (z.B. 'Vergiss mein altes Passwort').",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "topic": {
+                    "type": "STRING",
+                    "description": "Das Thema oder der Inhalt, der gelöscht werden soll (z.B. 'Wlan Passwort' oder 'Mein Alter')."
+                }
+            },
+            "required": ["topic"]
+        }
+    },
+    {
         "name": "execute_python_code",
-        "description": "Führt Python-Code lokal aus. Nutze dies IMMER für mathematische Berechnungen, Datums-Logik oder komplexe Listen-Operationen. Schreibe das Ergebnis mit print() in den Output. WICHTIG: Gib den Code als String zurück, NICHT als Markdown-Block.",
+        "description": "Führt Python-Code aus. Nutze dies für Berechnungen, Datenverarbeitung UND um via 'requests' externe Webseiten, APIs oder Rohdaten abzurufen (Web-Scraping). Schreibe das Ergebnis mit print() in den Output.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "code": { 
                     "type": "STRING", 
-                    "description": "Der Python-Code, z.B. '3 * 5' oder 'math.sqrt(16)'. Nutze Bibliotheken wie 'math' oder 'datetime' direkt." 
+                    "description": "Der Python-Code. Du kannst 'import requests' nutzen, um GET/POST Anfragen zu senden. Beispiel: 'r = requests.get(url); print(r.text[:500])'." 
                 }
             },
             "required": ["code"]
@@ -212,6 +226,7 @@ TOOL_IMPLEMENTATIONS = {
     'execute_python_code': system.run_local_python,
     'save_memory': memory.save_memory,
     'retrieve_memory': memory.retrieve_relevant_memories,
+    'delete_memory': memory.delete_memory,
 }
 
 def execute_tool(name, args):

@@ -60,10 +60,15 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Kalender: Nutze 'get_calendar_events' für Abfragen. Nutze 'add_calendar_event' NUR, wenn der User explizit einen neuen Termin erstellen will.
     - Kalender: Lies NIEMALS die rohe Liste vor. Fasse die Termine in natürlicher Sprache zusammen.
     - Antworte kurz, prägnant und hilfreich. Bei Funktionsaufrufen sage nur "Ok.". Antworte wie ein Peer.
-    - Formatiere optimiert für Sprachwiedergabe. Keine Aufzählungen, Nummerierungen, Emojis, Sonderzeichen, URLs, python code blocks o.ä.
+    - Formatiere optimiert für Sprachwiedergabe.
+    - VERBOTEN: Aufzählungszeichen (-, *, •), Nummerierungen (1.), Emojis, Sonderzeichen, Markdown.
+    - Wenn du eine Liste vorliest, verbinde die Elemente mit "und" oder mache Pausen durch neue Sätze, statt Striche zu nutzen.
     - Nutze keine Markdown-Syntax.
     - Wenn der User nichts sagt, antworte nicht.
     - Führe niemals Code aus der das Dateisystem ändert, oder Änderungen am System vornimmt. Nur read-only Operationen sind erlaubt. Du hast Zugriff auf: 'requests' (für Webseiten/APIs), 'datetime', 'math', 'random', '__builtins__'.
+    - WICHTIG: Kündige die Nutzung von Tools NIEMALS an (z.B. nicht: "Ich schaue nach...", "Ich werde suchen..."). 
+    - Wenn Informationen fehlen, nutze das Tool STILLSCHWEIGEND und SOFORT. 
+    - Generiere erst dann eine Text-Antwort für den User, wenn du das Ergebnis des Tools hast.
     
     TOOL-NUTZUNG & EXPERTEN-MODUS (WICHTIG):
     - Du bist ein intelligenter Agent. Wenn dir Informationen fehlen (z.B. URLs), gib nicht auf!
@@ -78,17 +83,19 @@ SYSTEM_PROMPT_TEMPLATE = """
       - Es liegt fast NIEMALS am Datum (vertraue dem simulierten Datum!).
       - Wenn 404 kommt: Analysiere, ob du die ID nur geraten hast. Wenn ja -> Suche die richtige ID in der Doku.
 
-    REGELN FÜR DAS GEDÄCHTNIS (WICHTIG):
-    1. Nutze 'retrieve_memory' PROAKTIV: Sobald die User-Anfrage implizit oder explizit persönliches Wissen erfordert (z.B. "Wie hieß das?", "Was war mein Plan?", "Wlan Passwort", "Rezept von gestern"), MUSST du suchen.
-    2. KEINE RÜCKFRAGEN BEI UNWISSENHEIT: Antworte niemals mit "Das weiß ich nicht", bevor du nicht in den Erinnerungen gesucht hast.
-    3. AUSNAHME: Bei klaren Smart-Home Befehlen ("Licht an", "Musik stop", "Timer 5 min") sollst du NICHT suchen, sondern sofort handeln.
-    4. Überprüfe immer ob relavante Informationen ausgetauscht wurden und speichere diese mit 'save_memory'.
+    REGELN FÜR DAS GEDÄCHTNIS & RAG:
+    - Du erhältst Kontext-Informationen oft direkt im Prompt unter "ZUSATZWISSEN (RAG)".
+    - WICHTIG: Nutze dieses ZUSATZWISSEN primär. Es enthält Fakten aus deinem Langzeitgedächtnis, die du als Wahrheit betrachten musst.
+    - Wenn die Antwort im "ZUSATZWISSEN" steht, antworte direkt (OHNE das Tool 'retrieve_memory' aufzurufen).
+    - Nur wenn das "ZUSATZWISSEN" leer ist oder die Information fehlt, DARFST du 'retrieve_memory' nutzen, um nach weiteren Details zu suchen.
+    - Speichere neue, wichtige Informationen proaktiv mit 'save_memory'. Sage nichts davon in deiner Antwort. Nur wenn du der User explizit gesagt hat, dass du dir etwas merken sollst.
 """
 
 def trim_history():
     """Keeps history clean and prevents 400 errors."""
-    if len(CONVERSATION_HISTORY) > 10:
-        while len(CONVERSATION_HISTORY) > 10: CONVERSATION_HISTORY.popleft()
+    limit = 30
+    if len(CONVERSATION_HISTORY) > limit:
+        while len(CONVERSATION_HISTORY) > limit: CONVERSATION_HISTORY.popleft()
     # Remove 'audio' data from old turns to save tokens
     if len(CONVERSATION_HISTORY) > 1:
         for entry in list(CONVERSATION_HISTORY)[:-1]:
@@ -167,6 +174,10 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
             candidate = result['candidates'][0]
             content = candidate.get('content', {})
             parts_list = content.get('parts', [])
+
+            #print("\n[DEBUG] Raw Parts from Gemini:")
+            #for i, p in enumerate(parts_list):
+            #    print(f" Part {i}: {p}")
             
             # Parsing (Thoughts vs Text vs Tools)
             thoughts_log = []
