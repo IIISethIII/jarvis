@@ -237,10 +237,21 @@ def execute_media_control(command, device_name=None, volume_level=None):
     
     # 1. Zielgerät intelligent suchen
     if device_name:
-        for d_name, eid in global_state.AVAILABLE_LIGHTS.items():
-            if device_name.lower() in d_name.lower() or d_name.lower() in device_name.lower():
-                target = eid
-                break
+        # A) ZUERST PRÜFEN: Ist es direkt eine Entity ID?
+        # Wir schauen, ob der übergebene Name exakt einer ID entspricht
+        if device_name in global_state.AVAILABLE_LIGHTS.values():
+            target = device_name
+        
+        # B) Wenn nicht, suchen wir im "Friendly Name" (Fallback)
+        if not target:
+            for d_name, eid in global_state.AVAILABLE_LIGHTS.items():
+                # Filter: Nur Media Player beachten (vermeidet Lautstärke-Regler etc.)
+                if not eid.startswith("media_player."):
+                    continue
+
+                if device_name.lower() in d_name.lower() or d_name.lower() in device_name.lower():
+                    target = eid
+                    break
     else:
         # Kein Name -> Suche zuerst nach Plex/Plexamp
         for d_name, eid in global_state.AVAILABLE_LIGHTS.items():

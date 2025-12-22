@@ -123,7 +123,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
         device_lines = []
         for dev in state.HA_CONTEXT:
             # Basis: Name und Status (z.B. "- Wohnzimmer Lampe (on)")
-            info = f"- {dev['name']} ({dev['state']})"
+            info = f"- {dev['name']} [ID: {dev['entity_id']}] ({dev['state']})"
             
             # Attribute hinzufügen (z.B. "[brightness: 150, temperature: 22]")
             if 'attributes' in dev and dev['attributes']:
