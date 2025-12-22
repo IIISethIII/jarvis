@@ -20,7 +20,7 @@ WAKE_WORD = "jarvis"
 RATE = 16000
 CHANNELS = 1
 CHUNK_SIZE = 512
-VOLUME_STEP = 3
+VOLUME_STEP = 7 # Volume adjustment step in percentage points
 
 # --- VISUALS ---
 DIM_BLUE = Color.blend(Color.BLUE, Color.BLACK, 0.2)

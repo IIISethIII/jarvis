@@ -65,14 +65,14 @@ FUNCTION_DECLARATIONS = [
             "required": ["query"]
         }
     },
-    {
-        "name": "control_light",
-        "description": "Schaltet Lichter oder Schalter an oder aus. Ohne Lampen-Name wird alles gesteuert.",
+{
+        "name": "control_device",
+        "description": "Schaltet Geräte, Lichter, Skripte, Szenen oder Schalter. Nutze 'press' für Taster oder Knöpfe.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "state": { "type": "STRING", "enum": ["on", "off"] },
-                "lamp_name": { "type": "STRING", "description": "Name der Lampe" }
+                "state": { "type": "STRING", "enum": ["on", "off", "press"] },
+                "device_name": { "type": "STRING", "description": "Name des Geräts oder der Entität" }
             },
             "required": ["state"]
         }
@@ -211,7 +211,7 @@ FUNCTION_DECLARATIONS = [
 
 # 2. Implementation Map
 TOOL_IMPLEMENTATIONS = {
-    'control_light': ha.execute_light_control,
+    'control_device': ha.execute_device_control,
     'control_media': ha.execute_media_control,
     'get_device_state': ha.get_ha_device_state,
     'get_calendar_events': ha.get_ha_calendar_events,

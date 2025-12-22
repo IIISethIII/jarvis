@@ -70,12 +70,13 @@ def main():
         print(f"Picovoice Init Error: {e}"); return
 
     with Board() as board, Leds() as leds:
-        # Fetch Home Assistant Devices
-        fetched_devices = ha.fetch_ha_entities()
-        state.AVAILABLE_LIGHTS.clear()
-        state.AVAILABLE_LIGHTS.update(fetched_devices)
+        # Fetch Home Assistant Devices (NEU)
+        context_list, device_lookup = ha.fetch_ha_context()
+        
+        state.HA_CONTEXT = context_list          # Fürs LLM (Status, Attribute)
+        state.AVAILABLE_LIGHTS = device_lookup   # Für die Befehls-Suche
         print(f" [HA] Gefundene Geräte: {list(state.AVAILABLE_LIGHTS.keys())}")
-
+        
         # Hardware Button mit visuellem Feedback (Grün)
         def on_button_press():
             if state.ALARM_PROCESS or state.ACTIVE_TIMERS:
@@ -160,9 +161,9 @@ def main():
 
                         if len(frames) > 20:
                             try:
-                                #  home assistant refresh devices
-                                fresh = ha.fetch_ha_entities()
-                                if fresh: state.AVAILABLE_LIGHTS.update(fresh)
+                                new_ctx, new_lookup = ha.fetch_ha_context()
+                                if new_ctx: state.HA_CONTEXT = new_ctx
+                                if new_lookup: state.AVAILABLE_LIGHTS.update(new_lookup)
                             except: pass
 
                             # save audio to temp file
@@ -198,17 +199,19 @@ def main():
                                 sfx.stop_loop()
                             
                             clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
+
+                            # lower_volume()
                             
                             google.speak_text(leds, clean_res, stream)
                             
                             if "<SESSION:KEEP>" in response:
                                 fade_color(leds, config.DIM_BLUE, config.DIM_PURPLE)
-                                lower_volume()
                                 sfx.play(config.SOUND_WAKE)
                                 state.open_session(8)
                             else:
                                 state.SESSION_OPEN_UNTIL = 0
                                 leds.update(Leds.rgb_off())
+                                #restore_volume()
                     else:
                         restore_volume()
                         state.SESSION_OPEN_UNTIL = 0 

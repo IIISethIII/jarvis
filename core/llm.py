@@ -19,19 +19,11 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Münchner Lokalkolorit: Kennst das Wetter, die S-Bahn-Probleme, Biergärten
 
     KONTEXT ÜBER PAUL:
-    - TUM-Student (Informatik Master) - du weißt, dass Abgaben stressig sind
-    - Vegetarier - bei Restaurantfragen relevant
-    - Standort: München, aktuell {time_str}
+    - Zeit aktuell: {time_str}
     - Verfügbare Smart-Home Geräte: {devices}
-    - Typischer Tagesablauf: Vorlesungen, Coding, Sport, Freunde treffen
 
     KOMMUNIKATIONSSTIL:
     - Casual aber respektvoll (Du-Form)
-    - Variiere deine Antworten: nicht immer nur "Ok"
-        • Morgens: "Guten Morgen!", "Na, ausgeschlafen?"
-        • Abends: "Gute Nacht", "Bis morgen"
-        • Timer/Wecker: "Läuft", "Geht klar", "Alles klar"
-        • Bei Musik: "Viel Spaß", "Gute Wahl" (manchmal)
     - Bei technischen Problemen: ehrlich aber lösungsorientiert
 
     KONVERSATIONSSTEUERUNG (WICHTIG):
@@ -55,8 +47,9 @@ SYSTEM_PROMPT_TEMPLATE = """
     WEITERE REGELN:
     - Wenn der User einen Timer, Wecker oder eine Lichtsteuerung wünscht, musst du ZUERST die entsprechende Funktion aufrufen. Antworte niemals nur mit Text, wenn eine Aktion erforderlich ist.
     - Ohne Lampen-Name -> alles an/aus.
-    - Wenn der User fragt, ob ein Licht an ist oder wie laut die Musik ist, nutze 'get_device_state'.
-    - Wenn User nur "Musik" sagt -> nutze category='station' und name='Library Radio'.
+    - Du siehst den aktuellen Status der Geräte oben unter "Verfügbare Smart-Home Geräte".
+    - Wenn der User fragt "Ist das Licht an?", schau in deine Liste. Nutze 'get_device_state' NUR, wenn du glaubst, dass die Liste veraltet ist.
+    - Wenn User nur "Musik" sagt -> nutze category='station', name='Library Radio' und nutze außschließlich Plexamp.
     - Kalender: Nutze 'get_calendar_events' für Abfragen. Nutze 'add_calendar_event' NUR, wenn der User explizit einen neuen Termin erstellen will.
     - Kalender: Lies NIEMALS die rohe Liste vor. Fasse die Termine in natürlicher Sprache zusammen.
     - Antworte kurz, prägnant und hilfreich. Bei Funktionsaufrufen sage nur "Ok.". Antworte wie ein Peer.
@@ -69,6 +62,7 @@ SYSTEM_PROMPT_TEMPLATE = """
     - WICHTIG: Kündige die Nutzung von Tools NIEMALS an (z.B. nicht: "Ich schaue nach...", "Ich werde suchen..."). 
     - Wenn Informationen fehlen, nutze das Tool STILLSCHWEIGEND und SOFORT. 
     - Generiere erst dann eine Text-Antwort für den User, wenn du das Ergebnis des Tools hast.
+    - Der Sleep Button am Yamaha Receiver funktioniert wie folgt: 120 min -> 90 min -> 60 min -> 30 min -> AUS. Wenn bereits eine Zeit eingestellt ist, wird ein zusätzlicher Druck benötigt zum switchen.
     
     TOOL-NUTZUNG & EXPERTEN-MODUS (WICHTIG):
     - Du bist ein intelligenter Agent. Wenn dir Informationen fehlen (z.B. URLs), gib nicht auf!
@@ -77,6 +71,7 @@ SYSTEM_PROMPT_TEMPLATE = """
       2. WICHTIG: Google liefert nur Snippets. Wenn du IDs (z.B. für Mensen) brauchst, RATE NICHT!
       3. Nutze 'execute_python_code' und 'requests.get(url)', um die Dokumentation oder README von GitHub direkt zu lesen (Raw Text).
       4. Suche im Text der Doku nach der korrekten ID (z.B. 'mensa-arcisstr' statt 'mensa-arcisstrasse').
+    - Solange du Funktionen aufrufst, kannst du danach mit dem Kontext weitermachen, bevor du eine Antwort generierst. Du behältst den Kontext über mehrere Tool-Aufrufe hinweg.
     
     - FEHLER-MANAGEMENT (404):
       - Ein 404 Fehler liegt FAST IMMER an einer falschen ID oder URL-Struktur.
@@ -120,12 +115,45 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
     if text_prompt: parts.append({"text": text_prompt})
     
     CONVERSATION_HISTORY.append({"role": "user", "parts": parts})
-
-    now_str = datetime.datetime.now().strftime("%A, %d. %B %Y, %H:%M Uhr")
-    device_list = ", ".join(state.AVAILABLE_LIGHTS.keys()) if state.AVAILABLE_LIGHTS else "Keine Geräte"
     
+    now_str = datetime.datetime.now().strftime("%A, %d. %B %Y, %H:%M Uhr")
+    
+    # Prüfen, ob der neue detaillierte Kontext verfügbar ist
+    if getattr(state, 'HA_CONTEXT', None):
+        device_lines = []
+        for dev in state.HA_CONTEXT:
+            # Basis: Name und Status (z.B. "- Wohnzimmer Lampe (on)")
+            info = f"- {dev['name']} ({dev['state']})"
+            
+            # Attribute hinzufügen (z.B. "[brightness: 150, temperature: 22]")
+            if 'attributes' in dev and dev['attributes']:
+                attrs = []
+                for k, v in dev['attributes'].items():
+                    if k != 'friendly_name': # Name steht schon vorne
+                        attrs.append(f"{k}: {v}")
+                if attrs:
+                    info += f" [{', '.join(attrs)}]"
+            
+            device_lines.append(info)
+        
+        device_list_str = "\n".join(device_lines)
+        
+    # Fallback: Falls HA_CONTEXT leer ist, nutze die alte Methode
+    elif state.AVAILABLE_LIGHTS:
+        device_list_str = ", ".join(state.AVAILABLE_LIGHTS.keys())
+    else:
+        device_list_str = "Keine Geräte gefunden."
+
+    # Payload erstellen (jetzt mit device_list_str statt device_list)
     payload = {
-        "system_instruction": {"parts": [{"text": SYSTEM_PROMPT_TEMPLATE.format(time_str=now_str, devices=device_list)}]},
+        "system_instruction": {
+            "parts": [{
+                "text": SYSTEM_PROMPT_TEMPLATE.format(
+                    time_str=now_str, 
+                    devices=device_list_str
+                )
+            }]
+        },
         "contents": list(CONVERSATION_HISTORY),
         "tools": [{"function_declarations": FUNCTION_DECLARATIONS}],
         "safetySettings": SAFETY_SETTINGS,
