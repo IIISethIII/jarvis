@@ -2,7 +2,8 @@
 
 __version__ = "1.0.0"
 
-# Expose the main entry point so you can do:
-# import jarvis
-# jarvis.start()
-from .main import main as start
+# Expose the main entry point via a function to avoid 
+# importing 'main' immediately when the package is initialized.
+def start():
+    from .main import main
+    main()

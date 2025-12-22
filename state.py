@@ -13,6 +13,8 @@ LED_LOCKED = False
 # Device Awareness
 AVAILABLE_LIGHTS = {}
 
+HA_CONTEXT = []
+
 # Session Management
 SESSION_OPEN_UNTIL = 0
 
