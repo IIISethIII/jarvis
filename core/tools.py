@@ -88,7 +88,7 @@ FUNCTION_DECLARATIONS = [
                     "enum": ["play", "pause", "play_pause", "stop", "next", "previous", "volume_up", "volume_down", "volume_set"],
                     "description": "Befehl. Für 'lauter' nutze volume_up, für 'leiser' volume_down." 
                 },
-                "device_name": { "type": "STRING", "description": "Name des Players" },
+                "device_name": { "type": "STRING", "description": "Die EXAKTE 'ID' des Geräts aus der Liste (z.B. media_player.plex...)." },
                 "volume_level": { "type": "NUMBER", "description": "Nur für volume_set nötig (0-100)" }
             },
             "required": ["command"]
