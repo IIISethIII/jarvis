@@ -13,6 +13,22 @@ from jarvis import config, state
 from jarvis.services import system, timer, ha, google, sfx, memory
 from jarvis.core import llm
 
+def get_jarvis_mic_index(pa_instance):
+    """
+    Sucht nach dem ALSA-Plugin 'jarvis_mic', um PulseAudio zu umgehen.
+    Gibt den Index zurück oder None (System Default).
+    """
+    for i in range(pa_instance.get_device_count()):
+        try:
+            info = pa_instance.get_device_info_by_index(i)
+            if "jarvis_mic" in info.get('name', ''):
+                print(f" [Audio] Nutze optimiertes Gerät: {info['name']} (ID {i})")
+                return i
+        except Exception:
+            pass
+    print(" [Audio] 'jarvis_mic' nicht gefunden. Nutze System-Standard.")
+    return None
+
 def fade_color(leds, start_color, end_color, duration=0.5):
     """
     Erzeugt einen weichen Farbübergang (Crossfade).
@@ -94,8 +110,15 @@ def main():
         board.button.when_pressed = on_button_press
 
         pa = pyaudio.PyAudio()
-        stream = pa.open(rate=config.RATE, channels=config.CHANNELS, format=pyaudio.paInt16, 
-                         input=True, frames_per_buffer=porcupine.frame_length)
+
+        mic_index = get_jarvis_mic_index(pa)
+
+        stream = pa.open(rate=config.RATE, 
+                         channels=config.CHANNELS, 
+                         format=pyaudio.paInt16, 
+                         input=True, 
+                         input_device_index=mic_index,
+                         frames_per_buffer=porcupine.frame_length)
         
         print(f"\nJarvis Online | Devices: {len(state.AVAILABLE_LIGHTS)}")
         google.speak_text(leds, "Ich bin jetzt online. Wie kann ich helfen?", stream)

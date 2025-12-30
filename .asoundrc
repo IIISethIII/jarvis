@@ -1,0 +1,44 @@
+# 1. Das physische Gerät (Hardware-Zugriff)
+# Wir greifen auf Karte 1 (deine USB Camera) zu.
+pcm.ps3eye_hw {
+    type hw
+    card 1
+    device 0
+}
+
+# 2. Der Downmix & Software-Verstärker
+# Hier passiert die Magie: Wir leiten 4 Kanäle auf 1 um.
+pcm.ps3eye_mono {
+    type route
+    slave.pcm "ps3eye_hw"
+    slave.channels 4    # Die Hardware liefert 4 Kanäle
+
+    # Die Misch-Matrix (Transfer Table)
+    # Syntax: ttable.Zieleingang.Quelleingang Lautstärke
+    # Wir summieren alle 4 Mikrofone auf den Zielkanal 0.
+    
+    # WICHTIG ZUR LAUTSTÄRKE:
+    # 0.25 = Durchschnitt (leise, kein Clipping)
+    # 1.0  = Summe (4x lauter, perfekt für Sprache, kann bei Schreien übersteuern)
+    
+    ttable.0.0 1.0
+    ttable.0.1 1.0
+    ttable.0.2 1.0
+    ttable.0.3 1.0
+}
+
+# 3. Der Format-Wandler (Plug)
+# Das ist dein "Standard-Gerät" für Python. Es kümmert sich automatisch
+# um Sample-Raten (48kHz -> 16kHz etc.).
+pcm.jarvis_mic {
+    type plug
+    slave.pcm "ps3eye_mono"
+}
+
+# Optional: Mache 'jarvis_mic' zum Standard für das ganze System
+# (Dann funktionieren auch Befehle ohne -D Parameter)
+pcm.!default {
+    type asym
+    playback.pcm "hw:0,0"  # Audio-Ausgabe über AIY Voice Bonnet (oder HDMI)
+    capture.pcm "jarvis_mic"
+}
