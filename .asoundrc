@@ -1,3 +1,4 @@
+# This goes into /etc/asound.conf
 # 1. Das physische Gerät (Hardware-Zugriff)
 # Wir greifen auf Karte 1 (deine USB Camera) zu.
 pcm.ps3eye_hw {

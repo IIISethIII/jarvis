@@ -305,12 +305,15 @@ def execute_play_music(category, name, library="Music", device_name=None):
     target_entity = None
     
     if device_name:
-        for d_name, eid in global_state.AVAILABLE_LIGHTS.items():
-            if device_name.lower() in d_name.lower() or d_name.lower() in device_name.lower():
-                target_entity = eid
-                break
+        if device_name in global_state.AVAILABLE_LIGHTS.values():
+            target_entity = device_name
+            
+        if not target_entity:
+            for d_name, eid in global_state.AVAILABLE_LIGHTS.items():
+                if device_name.lower() in d_name.lower() or d_name.lower() in device_name.lower():
+                    target_entity = eid
+                    break
     else:
-        # Bevorzugt Plex
         for d_name, eid in global_state.AVAILABLE_LIGHTS.items():
             if eid.startswith("media_player.") and ("plex" in eid.lower() or "plexamp" in eid.lower()):
                 target_entity = eid
