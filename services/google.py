@@ -114,8 +114,8 @@ def speak_text_gemini(leds, text, mood="normal"):
     except Exception as e:
         print(f" [TTS Exception] {e}")
 
-def speak_text(leds, text, stream=None):
-    if not text or not text.strip(): return
+def speak_text(leds, text, interrupt_check=None):
+    if not text or not text.strip(): return False # Rückgabe False (nicht unterbrochen)
     print("   Jarvis: " + text)
     leds.update(Leds.rgb_on(DIM_BLUE))
     
@@ -138,12 +138,14 @@ def speak_text(leds, text, stream=None):
                     f.setnchannels(1); f.setsampwidth(2); f.setframerate(24000)
                     f.writeframes(audio_binary)
                 
-                sfx.play_blocking(tmp_file)
+                return sfx.play_blocking(tmp_file, interrupt_check=interrupt_check)
 
         else:
             print(f" [TTS API Error] Status: {r.status_code} | Response: {r.text}")
     except Exception as e:
         print(f" [TTS Exception] {e}")
+
+    return False
 
 def perform_google_search_internal(query):
     """Performs search via a separate Gemini call."""
