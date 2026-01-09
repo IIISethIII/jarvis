@@ -38,23 +38,35 @@ def play(path_or_key):
     s = get_sound(path_or_key)
     if s: s.play()
 
-def play_blocking(path_or_key):
-    """Spielt Sound und blockiert den Code, bis er fertig ist (für TTS)."""
+def play_blocking(path_or_key, interrupt_check=None):
+    """
+    Spielt Sound und blockiert, erlaubt aber Unterbrechung.
+    interrupt_check: Eine Funktion, die True zurückgibt, wenn abgebrochen werden soll.
+    Rückgabe: True wenn unterbrochen wurde, sonst False.
+    """
     if not _initialized: init()
     
-    # Hier laden wir den Sound meist frisch (für TTS temp files), daher kein Caching
+    was_interrupted = False
+
     if os.path.exists(path_or_key):
         try:
             s = pygame.mixer.Sound(path_or_key)
-            # TTS darf etwas lauter sein als UI Sounds
             s.set_volume(0.9) 
             channel = s.play()
             
-            # Warten bis fertig
+            # Warten bis fertig ODER Unterbrechung
             while channel and channel.get_busy():
-                time.sleep(0.05)
+                # Prüfen ob unterbrochen werden soll
+                if interrupt_check and interrupt_check():
+                    channel.stop()
+                    was_interrupted = True
+                    break
+                
+                time.sleep(0.05) # Kleines Sleep gegen 100% CPU
         except Exception as e:
             print(f" [SFX Error] Play blocking failed: {e}")
+            
+    return was_interrupted
 
 def play_loop(path_or_key):
     global _current_loop_channel

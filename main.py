@@ -1,8 +1,10 @@
-# jarvis/main.py
+import math
 import struct
 import time
 import wave
 import threading
+import multiprocessing
+import queue
 import pyaudio
 import pvporcupine
 import pvcobra
@@ -13,33 +15,86 @@ from jarvis import config, state
 from jarvis.services import system, timer, ha, google, sfx, memory
 from jarvis.core import llm
 
-def get_jarvis_mic_index(pa_instance):
+# --- WORKER PROCESS: Liest Audio isoliert ---
+def audio_worker(output_queue, frame_length, rate, channels):
     """
-    Sucht nach dem ALSA-Plugin 'jarvis_mic', um PulseAudio zu umgehen.
-    Gibt den Index zurück oder None (System Default).
+    Läuft in einem eigenen Prozess. Liest nur Audio und schiebt es in die Queue.
     """
-    for i in range(pa_instance.get_device_count()):
+    import pyaudio
+    
+    # Unterdrücke ALSA Fehlermeldungen
+    try:
+        from ctypes import CFUNCTYPE, c_char_p, c_int, cdll
+        def py_error_handler(filename, line, function, err, fmt): pass
+        c_error_handler = CFUNCTYPE(None, c_char_p, c_int, c_char_p, c_int, c_char_p)(py_error_handler)
+        asound = cdll.LoadLibrary('libasound.so.2')
+        asound.snd_lib_error_set_handler(c_error_handler)
+    except: pass
+
+    def get_mic_index(pa):
+        for i in range(pa.get_device_count()):
+            try:
+                info = pa.get_device_info_by_index(i)
+                if "jarvis_mic" in info.get('name', ''):
+                    return i
+            except: pass
+        return None
+
+    pa = pyaudio.PyAudio()
+    stream = None
+    
+    try:
+        mic_index = get_mic_index(pa)
+        stream = pa.open(
+            rate=rate,
+            channels=channels,
+            format=pyaudio.paInt16,
+            input=True,
+            input_device_index=mic_index,
+            frames_per_buffer=frame_length
+        )
+        
+        while True:
+            pcm = stream.read(frame_length, exception_on_overflow=False)
+            output_queue.put(pcm)
+            
+    except Exception:
+        pass 
+    finally:
         try:
-            info = pa_instance.get_device_info_by_index(i)
-            if "jarvis_mic" in info.get('name', ''):
-                print(f" [Audio] Nutze optimiertes Gerät: {info['name']} (ID {i})")
-                return i
-        except Exception:
-            pass
-    print(" [Audio] 'jarvis_mic' nicht gefunden. Nutze System-Standard.")
-    return None
+            if stream: stream.close()
+            pa.terminate()
+        except: pass
+
+# --- MAIN HELPERS ---
+def get_rms(pcm_data):
+    count = len(pcm_data) // 2
+    shorts = struct.unpack(f"{count}h", pcm_data)
+    sum_squares = sum(s**2 for s in shorts)
+    return math.sqrt(sum_squares / count) if count > 0 else 0
+
+def lower_volume():
+    if state.PREVIOUS_VOLUME is None:
+        try:
+            headers = {"Authorization": "Bearer " + config.HA_TOKEN}
+            r = ha.session.get(f"{config.HA_URL}/api/states/sensor.hifiberry_plexamp_volume", headers=headers, timeout=2)
+            if r.status_code == 200: 
+                vol = float(r.json()['state'])
+                state.PREVIOUS_VOLUME = vol
+                ha.execute_media_control("volume_set", volume_level=vol/2)
+        except: pass
+
+def restore_volume():
+    if state.PREVIOUS_VOLUME is not None:
+        ha.execute_media_control("volume_set", volume_level=state.PREVIOUS_VOLUME)
+        state.PREVIOUS_VOLUME = None
 
 def fade_color(leds, start_color, end_color, duration=0.5):
-    """
-    Erzeugt einen weichen Farbübergang (Crossfade).
-    Dauer ca. 0.5 Sekunden für einen geschmeidigen Effekt.
-    """
+    """Restored: Erzeugt einen weichen Farbübergang."""
     steps = 25
     delay = duration / steps
-    
     r1, g1, b1 = start_color
     r2, g2, b2 = end_color
-        
     for i in range(steps + 1):
         factor = i / steps
         r = int(r1 + (r2 - r1) * factor)
@@ -48,234 +103,214 @@ def fade_color(leds, start_color, end_color, duration=0.5):
         leds.update(Leds.rgb_on((r, g, b)))
         time.sleep(delay)
 
-def lower_volume():
-    """Senkt die Lautstärke über den regulären Media-Player-Service ab und speichert den vorherigen Wert."""
-    volume = None
+def flush_queue(q):
+    """Leert die Audio-Queue, damit wir kein Echo der eigenen TTS-Antwort verarbeiten."""
     try:
-        headers = {"Authorization": "Bearer " + config.HA_TOKEN}
-        r = ha.session.get(f"{config.HA_URL}/api/states/sensor.hifiberry_plexamp_volume", headers=headers, timeout=2)
-        if r.status_code == 200:
-            volume = float(r.json()['state'])
-        else:
-            print(f" [Volume Error] Sensor Antwort: {r.status_code}")
-    except Exception as e:
-        print(f" [Volume Error] Sensor konnte nicht gelesen werden: {e}")
-    
-    state.PREVIOUS_VOLUME = volume
-    if state.PREVIOUS_VOLUME is not None:
-        ha.execute_media_control(command="volume_set", volume_level=state.PREVIOUS_VOLUME/2)
-
-
-def restore_volume():
-    """Stellt die Lautstärke über den regulären Media-Player-Service wieder her."""
-    if state.PREVIOUS_VOLUME is not None:
-        ha.execute_media_control(command="volume_set", volume_level=state.PREVIOUS_VOLUME)
+        while not q.empty():
+            q.get_nowait()
+    except queue.Empty:
+        pass
 
 def main():
     system.init_audio_settings()
-
-    sfx.init()
-    
-    # Start Timer Thread
+    sfx.init() 
     threading.Thread(target=timer.background_timer_check, daemon=True).start()
 
+    # Porcupine Init
     try:
         porcupine = pvporcupine.create(access_key=config.PICOVOICE_KEY, keywords=[config.WAKE_WORD])
         cobra = pvcobra.create(access_key=config.PICOVOICE_KEY)
+        frame_length = porcupine.frame_length
     except Exception as e:
-        print(f"Picovoice Init Error: {e}"); return
+        print(f"Init Error: {e}"); return
 
     with Board() as board, Leds() as leds:
-        # Fetch Home Assistant Devices (NEU)
-        context_list, device_lookup = ha.fetch_ha_context()
+        ctx, lookup = ha.fetch_ha_context()
+        state.HA_CONTEXT = ctx
+        state.AVAILABLE_LIGHTS = lookup
         
-        state.HA_CONTEXT = context_list          # Fürs LLM (Status, Attribute)
-        state.AVAILABLE_LIGHTS = device_lookup   # Für die Befehls-Suche
-        print(f" [HA] Gefundene Geräte: {list(state.AVAILABLE_LIGHTS.keys())}")
-        
-        # Hardware Button mit visuellem Feedback (Grün)
         def on_button_press():
             if state.ALARM_PROCESS or state.ACTIVE_TIMERS:
-                timer.stop_alarm_sound()
-                state.LED_LOCKED = True 
-                leds.update(Leds.rgb_on(Color.RED))
-                time.sleep(1)
-                state.LED_LOCKED = False
+                timer.stop_alarm_sound(); state.LED_LOCKED=True; leds.update(Leds.rgb_on(Color.RED)); time.sleep(1); state.LED_LOCKED=False
             else:
-                state.LED_LOCKED = True 
-                leds.update(Leds.rgb_on(Color.GREEN))
-                time.sleep(0.2)
-                state.LED_LOCKED = False
-
+                state.LED_LOCKED=True; leds.update(Leds.rgb_on(Color.GREEN)); time.sleep(0.2); state.LED_LOCKED=False
         board.button.when_pressed = on_button_press
 
-        pa = pyaudio.PyAudio()
+        # --- MULTIPROCESSING SETUP ---
+        audio_queue = multiprocessing.Queue(maxsize=50) 
+        audio_proc = None
 
-        mic_index = get_jarvis_mic_index(pa)
+        def start_audio_process():
+            p = multiprocessing.Process(target=audio_worker, args=(audio_queue, frame_length, config.RATE, config.CHANNELS))
+            p.daemon = True
+            p.start()
+            return p
 
-        stream = pa.open(rate=config.RATE, 
-                         channels=config.CHANNELS, 
-                         format=pyaudio.paInt16, 
-                         input=True, 
-                         input_device_index=mic_index,
-                         frames_per_buffer=porcupine.frame_length)
+        audio_proc = start_audio_process()
+
+        def check_for_interruption():
+            try:
+                # Wir schauen, ob Audio in der Queue ist
+                while not audio_queue.empty():
+                    # get_nowait ist wichtig, damit wir hier NICHT blockieren
+                    pcm_chunk = audio_queue.get_nowait()
+                    
+                    # Prüfen auf Wake Word
+                    keyword_index = porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm_chunk))
+                    if keyword_index >= 0:
+                        print("\n--> INTERRUPT DETECTED!")
+                        return True # Signalisiert: Sofort aufhören zu sprechen!
+            except:
+                pass
+            return False
         
         print(f"\nJarvis Online | Devices: {len(state.AVAILABLE_LIGHTS)}")
-        google.speak_text(leds, "Ich bin jetzt online. Wie kann ich helfen?", stream)
-        #google.speak_text_gemini(leds, "Ich bin jetzt online. Wie kann ich helfen?")
-
+        google.speak_text(leds, "Ich bin jetzt online.")
+        leds.update(Leds.rgb_off())
+        flush_queue(audio_queue) # Start clean
+        
+        last_log_time = time.time()
+        
         try:
             while True:
-                # --- SESSION ACTIVE (Cobra VAD) ---
-                if state.session_active():
-                    current_brightness = 0.4
-                    target_brightness = 0.4
-                    leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
+                # 1. AUDIO LESEN (WATCHDOG)
+                try:
+                    # Prüfe ob Daten da sind (Timeout 0.25s)
+                    pcm = audio_queue.get(timeout=0.25)
+                except queue.Empty:
+                    print(" [Watchdog] Mic tot! Starte Treiber neu...")
+                    
+                    if audio_proc.is_alive():
+                        audio_proc.terminate()
+                        audio_proc.join(timeout=0.1)
+                    
+                    audio_proc = start_audio_process()
+                    time.sleep(3.0) 
+                    continue 
 
+                # 2. VAD & Wake Word Logic (Normal)
+                if state.session_active():
+
+                    lower_volume()
+
+                    current_brightness = 0.4; target_brightness = 0.4
                     leds.update(Leds.rgb_on(config.DIM_PURPLE))
                     frames = []
-                    is_speaking = False
-                    speech_consecutive = 0
-                    start_time = time.time()
-                    silence_start = None
-
-                    while True: # VAD Loop
-                        pcm = stream.read(cobra.frame_length, exception_on_overflow=False)
-                        frames.append(pcm)
-                        prob = cobra.process(struct.unpack_from("h" * cobra.frame_length, pcm))
-
-                        if prob > 0.10:
-                            target_brightness = 0.85 # goal: bright when speaking
-                        else:
-                            target_brightness = 0.4 # goal: dim when silent
-
-                        # stepwise adjustment of brightness
-                        step = 0.15
-                        if current_brightness < target_brightness:
-                            current_brightness = min(target_brightness, current_brightness + step)
-                        elif current_brightness > target_brightness:
-                            current_brightness = max(target_brightness, current_brightness - step)
+                    is_speaking = False; speech_consecutive = 0; start_time = time.time(); silence_start = None
+                    
+                    while True:
+                        try:
+                            pcm_vad = audio_queue.get(timeout=1.0)
+                        except queue.Empty: break 
                         
-                        # LED update only if significant change
+                        frames.append(pcm_vad)
+                        prob = cobra.process(struct.unpack_from("h" * cobra.frame_length, pcm_vad))
+                        
+                        if prob > 0.10: target_brightness = 0.85; speech_consecutive += 1
+                        else: target_brightness = 0.4; speech_consecutive = 0
+                        
+                        step = 0.15
+                        if current_brightness < target_brightness: current_brightness = min(target_brightness, current_brightness + step)
+                        elif current_brightness > target_brightness: current_brightness = max(target_brightness, current_brightness - step)
                         if abs(current_brightness - target_brightness) > 0.01 or step > 0:
                              leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
-                        
-                        if prob > 0.10:
-                            speech_consecutive += 1
 
-                            if speech_consecutive >= 2: 
-                                is_speaking = True
-                                silence_start = None
-                        else:
-                            speech_consecutive = 0
+                        if speech_consecutive >= 2: is_speaking = True; silence_start = None
+                        elif is_speaking:
+                             if not silence_start: silence_start = time.time()
+                             elif time.time() - silence_start > 1.5: break
+                        elif time.time() - start_time > 8.0: break
 
-                            if is_speaking:
-                                if not silence_start: silence_start = time.time()
-                                elif time.time() - silence_start > 1.5: break # Silence detected
-                            elif time.time() - start_time > 8.0: break # Timeout
+                        # --- RESTORED: Dynamic HA Context Update ---
+                        # Ich habe es auf "Genau bei Frame 25" geändert, damit es nur einmal pro Satz läuft
+                        # und nicht das System durch Dauerfeuer blockiert.
+                        if len(frames) == 25:
+                            def update_ha_bg():
+                                try:
+                                    # print(" [Debug] Hole HA Kontext...")
+                                    new_ctx, new_lookup = ha.fetch_ha_context()
+                                    if new_ctx: state.HA_CONTEXT = new_ctx
+                                    if new_lookup: state.AVAILABLE_LIGHTS.update(new_lookup)
+                                except: pass
+                            
+                            # Starten als Thread, damit die Audio-Schleife NICHT wartet
+                            threading.Thread(target=update_ha_bg, daemon=True).start()
 
                     if is_speaking:
                         restore_volume()
-
                         sfx.play_loop(config.SOUND_THINKING)
-                        
                         leds.pattern = Pattern.breathe(1000)
                         leds.update(Leds.rgb_pattern(config.DIM_BLUE))
+                        
+                        with wave.open("/tmp/req.wav", 'wb') as wf:
+                            wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
+                            wf.writeframes(b''.join(frames))
+                        
+                        response = "Fehler."
+                        try:
+                            with open("/tmp/req.wav", "rb") as f: wav_data = f.read()
+                            user_text = google.transcribe_audio(wav_data)
+                            print(f" --> User: {user_text}")
+                            if user_text:
+                                rag = memory.retrieve_relevant_memories(user_text)
+                                final_prompt = f"ZUSATZWISSEN(RAG):\n{rag}\n\nUSER:\n{user_text}"
+                                response = llm.ask_gemini(leds, text_prompt=final_prompt)
+                            else: response = ""
+                        except Exception as e: print(e)
+                        finally: sfx.stop_loop()
 
-                        if len(frames) > 20:
-                            try:
-                                new_ctx, new_lookup = ha.fetch_ha_context()
-                                if new_ctx: state.HA_CONTEXT = new_ctx
-                                if new_lookup: state.AVAILABLE_LIGHTS.update(new_lookup)
-                            except: pass
+                        clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
+                        
+                        # TTS spricht hier (dauert ein paar Sekunden)
+                        was_interrupted = google.speak_text(leds, clean_res, interrupt_check=check_for_interruption)
 
-                            # save audio to temp file
-                            with wave.open("/tmp/req.wav", 'wb') as wf:
-                                wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
-                                wf.writeframes(b''.join(frames))
-                            
-                            response = "Fehler."
-                            try:
-                                with open("/tmp/req.wav", "rb") as f:
-                                    wav_data = f.read()
+                        # WICHTIG: Queue leeren, damit wir nicht Jarvis eigenes Echo hören
+                        flush_queue(audio_queue)
 
-                                # stt via google
-                                user_text = google.transcribe_audio(wav_data)
-                                print(f" --> User (STT): \"{user_text}\"")
+                        if was_interrupted:
+                             # Wenn unterbrochen wurde, verhalten wir uns wie bei einem Wake-Word
+                             sfx.play(config.SOUND_WAKE)
+                             lower_volume()
+                             state.open_session(8)
+                             # Wir springen direkt zum Anfang der Schleife, session ist ja noch aktiv
+                             continue
 
-                                if user_text:
-                                    # search relevant memories via RAG
-                                    rag_context = memory.retrieve_relevant_memories(user_text)
-                                    print(f" --> RAG: {rag_context[:60]}...")
-
-                                    # build final prompt with RAG context
-                                    final_prompt = f"ZUSATZWISSEN(RAG):\n{rag_context}\n\nUSER:\n{user_text}"
-                                    
-                                    # send to LLM
-                                    response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=None)
-                                else:
-                                    response = ""
-
-                            except Exception as e:
-                                print(f"Processing Error: {e}")
-                            finally:
-                                sfx.stop_loop()
-                            
-                            clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
-
-                            # lower_volume()
-                            
-                            google.speak_text(leds, clean_res, stream)
-                            
-                            if "<SESSION:KEEP>" in response:
-                                fade_color(leds, config.DIM_BLUE, config.DIM_PURPLE)
-                                sfx.play(config.SOUND_WAKE)
-                                state.open_session(8)
-                            else:
-                                state.SESSION_OPEN_UNTIL = 0
-                                leds.update(Leds.rgb_off())
-                                #restore_volume()
+                        if "<SESSION:KEEP>" in response:
+                            # --- RESTORED: Fade Effect ---
+                            fade_color(leds, config.DIM_BLUE, config.DIM_PURPLE)
+                            state.open_session(8)
+                            sfx.play(config.SOUND_WAKE)
+                        else:
+                            state.SESSION_OPEN_UNTIL = 0
+                            leds.update(Leds.rgb_off())
                     else:
-                        restore_volume()
-                        state.SESSION_OPEN_UNTIL = 0 
-                        leds.update(Leds.rgb_off())
-                        print(" [Session] Closed (Silence)")
-
+                        restore_volume(); state.SESSION_OPEN_UNTIL = 0; leds.update(Leds.rgb_off())
                     continue
 
+                # --- WAKE WORD ---
                 if state.ALARM_PROCESS:
-                    leds.pattern = Pattern.breathe(1000)
-                    leds.update(Leds.rgb_pattern(config.DIM_BLUE))
+                      leds.pattern = Pattern.breathe(1000); leds.update(Leds.rgb_pattern(config.DIM_BLUE))
 
-                elif state.LED_LOCKED:
-                    pass 
+                # Heartbeat (alle 10s)
+                if time.time() - last_log_time > 10:
+                    last_log_time = time.time()
 
-                else:
-                    leds.update(Leds.rgb_off())
-                
-                pcm = stream.read(porcupine.frame_length, exception_on_overflow=False)
                 if porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm)) >= 0:
-                    print("\n--> Wake Word Detectedd")
+                    print("\n--> Wake Word Detected")
                     sfx.play(config.SOUND_WAKE)
                     lower_volume()
-
                     if state.ALARM_PROCESS:
                         timer.stop_alarm_sound()
-                        state.LED_LOCKED = True 
-                        leds.update(Leds.rgb_on(Color.RED))
-                        time.sleep(1)
-                        state.LED_LOCKED = False
-                        google.speak_text(leds, "Wecker gestoppt.", stream)
+                        google.speak_text(leds, "Wecker gestoppt.")
                         leds.update(Leds.rgb_off())
-                        restore_volume()
+                        flush_queue(audio_queue) # Auch hier wichtig
                         continue
-                    
                     state.open_session(8)
 
         except KeyboardInterrupt: pass
         finally:
-            leds.update(Leds.rgb_off())
-            stream.close(); pa.terminate(); porcupine.delete(); cobra.delete()
+            if audio_proc: audio_proc.terminate()
+            porcupine.delete(); cobra.delete()
 
 if __name__ == "__main__":
     main()
