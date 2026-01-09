@@ -65,42 +65,44 @@ FUNCTION_DECLARATIONS = [
             "required": ["query"]
         }
     },
-{
+    {
         "name": "control_device",
-        "description": "Schaltet Geräte, Lichter, Skripte, Szenen oder Schalter. Nutze 'press' für Taster oder Knöpfe.",
+        "description": "Schaltet Geräte an/aus. WICHTIG: Nutze NUR die entity_id!",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "state": { "type": "STRING", "enum": ["on", "off", "press"] },
-                "device_name": { "type": "STRING", "description": "Name des Geräts oder der Entität" }
+                "device_name": { 
+                    "type": "STRING", 
+                    "description": "Die EXAKTE 'entity_id' aus der Geräteliste (z.B. 'light.wohnzimmer' oder 'switch.steckdose'). KEINE Friendly Names!" 
+                }
             },
-            "required": ["state"]
+            "required": ["state", "device_name"]
         }
     },
     {
         "name": "control_media",
-        "description": "Steuert Musikwiedergabe UND Musik-Lautstärke auf Plex/externen Playern.",
+        "description": "Steuert Musikwiedergabe.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "command": { 
                     "type": "STRING", 
-                    "enum": ["play", "pause", "play_pause", "stop", "next", "previous", "volume_up", "volume_down", "volume_set"],
-                    "description": "Befehl. Für 'lauter' nutze volume_up, für 'leiser' volume_down." 
+                    "enum": ["play", "pause", "play_pause", "stop", "next", "previous", "volume_up", "volume_down", "volume_set"]
                 },
-                "device_name": { "type": "STRING", "description": "Die EXAKTE 'ID' des Geräts aus der Liste (z.B. media_player.plex...)." },
-                "volume_level": { "type": "NUMBER", "description": "Nur für volume_set nötig (0-100)" }
+                "device_name": { "type": "STRING", "description": "Die EXAKTE 'entity_id' des Media Players (z.B. media_player.plex...)." },
+                "volume_level": { "type": "NUMBER", "description": "0-100" }
             },
             "required": ["command"]
         }
     },
     {
         "name": "get_device_state",
-        "description": "Prüft den aktuellen Status (An/Aus, Lautstärke, Attribute) eines Geräts.",
+        "description": "Prüft Status.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "device_name": { "type": "STRING", "description": "Name des Geräts, z.B. 'Stehlampe' oder 'Wohnzimmer'" }
+                "device_name": { "type": "STRING", "description": "Die EXAKTE 'entity_id' (z.B. sensor.temp)." }
             },
             "required": ["device_name"]
         }
@@ -126,14 +128,14 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "play_specific_music",
-        "description": "Spielt Musik oder Hörbücher ab (Starten, nicht steuern).",
+        "description": "Spielt Musik ab.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "category": { "type": "STRING", "enum": ["artist", "album", "playlist", "genre", "track", "station"] },
                 "name": { "type": "STRING" },
                 "library": { "type": "STRING", "enum": ["Music", "Audiobooks"] },
-                "device_name": { "type": "STRING" }
+                "device_name": { "type": "STRING", "description": "Die entity_id des Players." }
             },
             "required": ["category", "name", "library"]
         }

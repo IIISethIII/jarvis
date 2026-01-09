@@ -25,24 +25,23 @@ SYSTEM_PROMPT_TEMPLATE = """
     KOMMUNIKATIONSSTIL:
     - Casual aber respektvoll (Du-Form)
     - Bei technischen Problemen: ehrlich aber lösungsorientiert
+    - Nach JEDER Antwort fügst du GENAU EINES dieser Tokens hinzu:
+      <SESSION:KEEP> (wenn du auf eine Antwort wartest) oder <SESSION:CLOSE> (wenn der Befehl erledigt ist).
 
-    KONVERSATIONSSTEUERUNG (WICHTIG):
-
-    Nach JEDER Antwort fügst du GENAU EINES dieser Tokens hinzu:
-    - <SESSION:KEEP>  → Session bleibt offen für weiteren Input (nur wenn es noch explizite Rückfragen gibt)
-    - <SESSION:CLOSE> → Interaktion beenden (meistens, bei Befehlen, Fragen die abgeschlossen sind)
-
-    WICHTIG: NIEMALS Rückfragen stellen wie "Noch etwas?" - das wirkt künstlich.
-    Die Session ist einfach offen, falls Paul noch was sagen will.
+    REGELN FÜR SMART HOME
+    1. Wenn du Geräte steuerst (control_device, control_media, get_device_state), musst du ZWINGEND die 'entity_id' verwenden!
+    2. Die ID steht in deiner Geräteliste immer in eckigen Klammern, z.B. "Wohnzimmer Decke [ID: light.wohnzimmer_decke]".
+    3. Nutze NIEMALS den Namen ("Wohnzimmer Decke") als Parameter, sondern IMMER die ID ("light.wohnzimmer_decke").
+    4. Wenn du "Licht an" hörst, suche die passenden IDs raus und steuere sie.
     
     REGELN FÜR TIMER & WECKER:
-    - WICHTIG: Du KANNST KEINE Timer stellen, indem du es nur sagst. Du MUSST zwingend das Tool 'manage_timer_alarm' benutzen.
+    - Du KANNST KEINE Timer stellen, indem du es nur sagst. Du MUSST zwingend das Tool 'manage_timer_alarm' benutzen.
     - Wenn der User "Timer 5 Minuten" sagt -> Rufe `manage_timer_alarm(action='set_timer', seconds=300)` auf.
-    - Antworte NIEMALS mit "Timer gestellt", ohne dass du das Tool aufgerufen hast.
     
-    REGELN FÜR LAUTSTÄRKE:
-    1. Wenn der User "lauter", "leiser" oder "Musik leiser" sagt -> Nutze 'control_media' (command='volume_up'/'volume_down'). Benutze außschließlich Plexamp Lautstärkeregelung.
-    2. NUR wenn der User explizit "Systemlautstärke", "Stimme" oder "Jarvis lauter" sagt -> Nutze 'set_system_volume'.
+    REGELN FÜR LAUTSTÄRKE & MUSIK:
+    1. Wenn der User "lauter/leiser" sagt -> Nutze 'control_media' mit der ID des Plexamp Players.
+    2. NUR wenn der User "Systemlautstärke" sagt -> Nutze 'set_system_volume'.
+    3. Wenn der User nur "Musik" sagt -> nutze category='station', name='Library Radio' und nutze außschließlich Plexamp.
     
     WEITERE REGELN:
     - Wenn der User einen Timer, Wecker oder eine Lichtsteuerung wünscht, musst du ZUERST die entsprechende Funktion aufrufen. Antworte niemals nur mit Text, wenn eine Aktion erforderlich ist.
@@ -129,18 +128,21 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
             if 'attributes' in dev and dev['attributes']:
                 attrs = []
                 for k, v in dev['attributes'].items():
-                    if k != 'friendly_name': # Name steht schon vorne
+                    if k != 'friendly_name':
                         attrs.append(f"{k}: {v}")
                 if attrs:
-                    info += f" [{', '.join(attrs)}]"
+                    info += f" {{{', '.join(attrs)}}}"
             
             device_lines.append(info)
         
         device_list_str = "\n".join(device_lines)
         
-    # Fallback: Falls HA_CONTEXT leer ist, nutze die alte Methode
     elif state.AVAILABLE_LIGHTS:
-        device_list_str = ", ".join(state.AVAILABLE_LIGHTS.keys())
+        # Fallback für Kompatibilität
+        lines = []
+        for name, eid in state.AVAILABLE_LIGHTS.items():
+             lines.append(f"- {name} [ID: {eid}]")
+        device_list_str = "\n".join(lines)
     else:
         device_list_str = "Keine Geräte gefunden."
 
@@ -256,6 +258,10 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
                 print(f"💰 KOSTEN CHECK (Schritte: {step_count+1}), Kosten: ~{cost_eur:.6f} €")
 
                 text = "".join(final_text_parts)
+
+                # SICHERHEITSNETZ: Entfernt Markdown-Reste, falls das LLM nicht hört
+                text = text.replace("*", "").replace("#", "").replace("`", "")
+
                 with HISTORY_LOCK:
                     CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
                 return text
