@@ -56,10 +56,10 @@ def transcribe_audio(audio_bytes):
         print(f"   [STT Exception] {e}")
         return ""
 
-def speak_text_gemini(leds, text, mood="normal"):
+def speak_text_gemini(leds, text, mood="normal", interrupt_check=None):
     if not text or not text.strip(): return
     if len(text) < 20:
-        speak_text(leds, text)
+        speak_text(leds, text, interrupt_check=interrupt_check)
         return
     
     style = "Sprich wie ein entspannter 24-jähriger. Locker, casual, natürlich."
@@ -108,7 +108,7 @@ def speak_text_gemini(leds, text, mood="normal"):
                     f.setframerate(24000)
                     f.writeframes(all_audio_data)
                 
-                sfx.play_blocking(tmp_file)
+                sfx.play_blocking(tmp_file, interrupt_check=interrupt_check)
 
         else: print(f" [TTS Error] {response.status_code}")
     except Exception as e:
