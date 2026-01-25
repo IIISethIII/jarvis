@@ -175,8 +175,8 @@ def main():
             while True:
                 # 1. AUDIO LESEN (WATCHDOG)
                 try:
-                    # Prüfe ob Daten da sind (Timeout 0.25s)
-                    pcm = audio_queue.get(timeout=0.25)
+                    # Prüfe ob Daten da sind
+                    pcm = audio_queue.get(timeout=1.5)
                 except queue.Empty:
                     print(" [Watchdog] Mic tot! Starte Treiber neu...")
                     
