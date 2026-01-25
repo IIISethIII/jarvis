@@ -26,7 +26,7 @@ def init_audio_settings():
         os.system("amixer -c 0 sset 'ADC Boost' 1")
         
         # 3. Wiedergabe
-        os.system("amixer -c 0 sset 'Speaker' 60%")
+        os.system("amixer -c 0 sset 'Speaker' 50%")
         os.system("amixer -c 0 sset 'Speaker Channel' unmute")
         
         return True

@@ -11,7 +11,7 @@ pcm.ps3eye_snoop {
         pcm "hw:1,0"
         channels 4
         rate 48000        # Die PS3 Eye läuft am stabilsten auf 48kHz
-        period_size 1024
+        period_size 1536
         buffer_size 32768 # Großer Puffer! Fängt Ruckler ab.
     }
 }
