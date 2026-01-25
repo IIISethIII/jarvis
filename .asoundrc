@@ -1,27 +1,28 @@
 # This goes into /etc/asound.conf
-# 1. Das physische Gerät (Hardware-Zugriff)
-# Wir greifen auf Karte 1 (deine USB Camera) zu.
-pcm.ps3eye_hw {
-    type hw
-    card 1
-    device 0
+# --- TEIL 1: INPUT (PS3 Eye Setup - Optimiert mit Puffer) ---
+
+# 1. Der Aufnahme-Server (Puffert die Hardware)
+# Statt direkt 'hw', nutzen wir 'dsnoop'. Das entkoppelt Python von der Hardware.
+pcm.ps3eye_snoop {
+    type dsnoop
+    ipc_key 2222          # Muss anders sein als bei dmix (1024)
+    ipc_key_add_uid false
+    slave {
+        pcm "hw:1,0"
+        channels 4
+        rate 48000        # Die PS3 Eye läuft am stabilsten auf 48kHz
+        period_size 1024
+        buffer_size 32768 # Großer Puffer! Fängt Ruckler ab.
+    }
 }
 
-# 2. Der Downmix & Software-Verstärker
-# Hier passiert die Magie: Wir leiten 4 Kanäle auf 1 um.
+# 2. Der Downmix (4 Kanäle -> 1 Kanal)
 pcm.ps3eye_mono {
     type route
-    slave.pcm "ps3eye_hw"
-    slave.channels 4    # Die Hardware liefert 4 Kanäle
-
-    # Die Misch-Matrix (Transfer Table)
-    # Syntax: ttable.Zieleingang.Quelleingang Lautstärke
-    # Wir summieren alle 4 Mikrofone auf den Zielkanal 0.
+    slave.pcm "ps3eye_snoop" # Wir lesen jetzt vom Puffer, nicht direkt von Hardware
+    slave.channels 4
     
-    # WICHTIG ZUR LAUTSTÄRKE:
-    # 0.25 = Durchschnitt (leise, kein Clipping)
-    # 1.0  = Summe (4x lauter, perfekt für Sprache, kann bei Schreien übersteuern)
-    
+    # Misch-Matrix (bleibt gleich)
     ttable.0.0 1.0
     ttable.0.1 1.0
     ttable.0.2 1.0
@@ -29,17 +30,48 @@ pcm.ps3eye_mono {
 }
 
 # 3. Der Format-Wandler (Plug)
-# Das ist dein "Standard-Gerät" für Python. Es kümmert sich automatisch
-# um Sample-Raten (48kHz -> 16kHz etc.).
+# Wandelt die internen 48kHz sauber in die 16kHz für Jarvis um
 pcm.jarvis_mic {
     type plug
     slave.pcm "ps3eye_mono"
 }
 
-# Optional: Mache 'jarvis_mic' zum Standard für das ganze System
-# (Dann funktionieren auch Befehle ohne -D Parameter)
+
+# --- TEIL 2: OUTPUT (Voice Bonnet Setup - Neu mit dmix) ---
+
+# 4. Der Software-Mixer für die Ausgabe (NEU)
+# Erlaubt Pygame und aplay gleichzeitig auf Karte 0 zuzugreifen
+pcm.dmixed {
+    type dmix
+    ipc_key 1024
+    ipc_key_add_uid false
+    slave {
+        pcm "hw:0,0"      # Voice Bonnet Hardware
+        period_time 0
+        period_size 1024
+        buffer_size 8192
+        rate 48000
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+# --- TEIL 3: STANDARD GERÄT (Zusammenführung) ---
+
+# 5. Das Standard-Gerät für das System
 pcm.!default {
     type asym
-    playback.pcm "hw:0,0"  # Audio-Ausgabe über AIY Voice Bonnet (oder HDMI)
+    # OUTPUT: Geht jetzt durch den Mixer (dmixed) -> "Device busy" gelöst!
+    playback.pcm "plug:dmixed"
+    
+    # INPUT: Nutzt weiterhin deinen speziellen Mix -> PS3 Eye Qualität erhalten!
     capture.pcm "jarvis_mic"
+}
+
+# 6. Standard Mixer-Regler (auf Voice Bonnet Hardware mappen)
+ctl.!default {
+    type hw
+    card 0
 }
