@@ -22,7 +22,7 @@ def init_audio_settings():
         os.system("amixer -c 0 sset 'ADC' 100%")
 
         # 2. Der "Sweet Spot" Boost (Deine Einstellung)
-        os.system("amixer -c 0 sset 'Mono ADC Boost' 2")
+        os.system("amixer -c 0 sset 'Mono ADC Boost' 3")
         os.system("amixer -c 0 sset 'ADC Boost' 1")
         
         # 3. Wiedergabe

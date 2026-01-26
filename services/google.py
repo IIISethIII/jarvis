@@ -141,7 +141,7 @@ def speak_text_gemini(leds, text, mood="normal", interrupt_check=None):
         }
     }
     
-    player_command = ["aplay", "-r", "24000", "-f", "S16_LE", "-c", "1", "-t", "raw", "--buffer-time=50000"]
+    player_command = ["aplay", "-r", "24000", "-f", "S16_LE", "-c", "1", "-t", "raw", "--buffer-time=500000"]
     player_process = None
 
     try:
@@ -264,7 +264,7 @@ def speak_text(leds, text, interrupt_check=None):
             if content:
                 audio_binary = base64.b64decode(content)
                 
-                cmd = ["aplay", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1", "-q", "--buffer-time=50000"]
+                cmd = ["aplay", "-t", "raw", "-f", "S16_LE", "-r", "24000", "-c", "1", "-q", "--buffer-time=500000"]
                 player_process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
                 
                 def writer():
