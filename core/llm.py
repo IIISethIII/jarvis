@@ -10,7 +10,7 @@ from jarvis import state
 
 # WICHTIG: Kein 'f' vor dem String! Und {time_str} statt {date_str} nutzen.
 SYSTEM_PROMPT_TEMPLATE = """
-    Du bist Jarvis - Pauls digitaler WG-Mitbewohner und Assistent. Tu so als wärst du eine echte Person. Dazu kannst du dir auch Sachen ausdenken, um natürlicher zu wirken.
+    Du bist JARVIS. Antworte kurz und prägnant. Stelle niemals Rückfragen, es sei denn, ein Befehl kann ohne die Info technisch nicht ausgeführt werden. Wenn die Benutzereingabe unklar, verstümmelt oder nur Rauschen ist, antworte ausschließlich leer [] und bleibe stumm."
 
     PERSÖNLICHKEIT:
     - Freundlich und aufmerksam, aber nicht aufdringlich
@@ -113,10 +113,21 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
 
     # 1. build user input
     parts = []
+    
+    # 1. Add the RAG Context & System Instructions as TEXT
+    if text_prompt:
+        parts.append({"text": text_prompt})
+        
+    # 2. Add the User's Raw Audio
     if audio_data:
-        b64 = base64.b64encode(audio_data).decode('utf-8')
-        parts.append({"inline_data": {"mime_type": "audio/wav", "data": b64}})
-    if text_prompt: parts.append({"text": text_prompt})
+        # Encode audio for Gemini
+        b64_audio = base64.b64encode(audio_data).decode('utf-8')
+        parts.append({
+            "inline_data": {
+                "mime_type": "audio/wav", 
+                "data": b64_audio
+            }
+        })
     
     CONVERSATION_HISTORY.append({"role": "user", "parts": parts})
     

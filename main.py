@@ -118,7 +118,7 @@ def main():
 
     # Porcupine Init
     try:
-        porcupine = pvporcupine.create(access_key=config.PICOVOICE_KEY, keywords=[config.WAKE_WORD])
+        porcupine = pvporcupine.create(access_key=config.PICOVOICE_KEY, keywords=[config.WAKE_WORD], sensitivities=[0.4])
         cobra = pvcobra.create(access_key=config.PICOVOICE_KEY)
         frame_length = porcupine.frame_length
     except Exception as e:
@@ -170,15 +170,25 @@ def main():
         flush_queue(audio_queue) # Start clean
         
         last_log_time = time.time()
+
+        mic_fail_count = 0
         
         try:
             while True:
                 # 1. AUDIO LESEN (WATCHDOG)
                 try:
                     # Prüfe ob Daten da sind
-                    pcm = audio_queue.get(timeout=1.5)
+                    pcm = audio_queue.get(timeout=3)
+                    mic_fail_count = 0
                 except queue.Empty:
-                    print(" [Watchdog] Mic tot! Starte Treiber neu...")
+                    mic_fail_count += 1
+                    print(f" [Watchdog] Mic tot! ({mic_fail_count}/5) Starte Treiber neu...")
+                    
+                    # Wenn zu viele Versuche scheitern, den gesamten Dienst neustarten
+                    if mic_fail_count >= 5:
+                        print(" [System] Kritischer Audio-Fehler. Starte Service neu...")
+                        system.restart_service()
+                        break # Loop verlassen, damit der Prozess endet
                     
                     if audio_proc.is_alive():
                         audio_proc.terminate()
@@ -186,7 +196,7 @@ def main():
                     
                     audio_proc = start_audio_process()
                     time.sleep(3.0) 
-                    continue 
+                    continue
 
                 # 2. VAD & Wake Word Logic (Normal)
                 if state.session_active():
@@ -248,16 +258,33 @@ def main():
                         
                         response = "Fehler."
                         try:
-                            with open("/tmp/req.wav", "rb") as f: wav_data = f.read()
+                            # 1. Read the raw bytes for the direct Audio-Input to Gemini
+                            with open("/tmp/req.wav", "rb") as f: 
+                                wav_data = f.read()
+                            
+                            # 2. Fast transcription for RAG lookup
+                            # We still need this to know WHAT to search for in memory
                             user_text = google.transcribe_audio(wav_data)
-                            print(f" --> User: {user_text}")
+                            print(f" --> User (Transcribed): {user_text}")
+
                             if user_text:
+                                # 3. Get RAG context based on transcription
                                 rag = memory.retrieve_relevant_memories(user_text)
-                                final_prompt = f"ZUSATZWISSEN(RAG):\n{rag}\n\nUSER:\n{user_text}"
-                                response = llm.ask_gemini(leds, text_prompt=final_prompt)
-                            else: response = ""
-                        except Exception as e: print(e)
-                        finally: sfx.stop_loop()
+                                
+                                # 4. Build the prompt with RAG context
+                                # We explicitly tell the model that the user is speaking in the audio part
+                                final_prompt = f"ZUSATZWISSEN(RAG):\n{rag}\n\n(Antworte auf die Audio-Eingabe des Users.)"
+                                
+                                # 5. Call Gemini with BOTH the prompt and the raw audio data
+                                response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=wav_data)
+                            else:
+                                # Handle silence/noise: just send the audio and see if Gemini hears something
+                                response = llm.ask_gemini(leds, text_prompt="(Der User hat etwas gesagt, aber die Transkription war leer. Hör genau hin.)", audio_data=wav_data)
+                                
+                        except Exception as e: 
+                            print(f" [Main Loop Error] {e}")
+                        finally: 
+                            sfx.stop_loop()
 
                         clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
                         
