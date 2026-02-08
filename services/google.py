@@ -5,7 +5,7 @@ import time
 import wave
 import threading
 from aiy.leds import Leds
-from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, GEMINI_URL, MY_LAT, MY_LNG
+from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, GEMINI_URL, GEMINI_STT_URL, MY_LAT, MY_LNG
 from jarvis.utils import session
 from jarvis.services import sfx
 
@@ -42,7 +42,7 @@ def transcribe_audio(audio_bytes):
 
     try:
         # Wir nutzen hier dieselbe URL wie sonst auch (Flash ist schnell genug)
-        response = session.post(GEMINI_URL, json=payload, timeout=10)
+        response = session.post(GEMINI_STT_URL, json=payload, timeout=10)
         if response.status_code == 200:
             result = response.json()
             try:
@@ -247,7 +247,7 @@ def speak_text(leds, text, interrupt_check=None):
     url = f"https://texttospeech.googleapis.com/v1/text:synthesize?key={GOOGLE_TTS_KEY}"
     payload = {
         "input": {"text": text},
-        "voice": {"languageCode": "de-DE", "name": "de-DE-Journey-D"}, 
+        "voice": {"languageCode": "de-DE", "name": "de-DE-Journey-D"}, # faster voice: "voice": {"languageCode": "de-DE", "name": "de-DE-Neural2-D", "ssmlGender": "MALE"},
         "audioConfig": {"audioEncoding": "LINEAR16", "sampleRateHertz": 24000}
     }
     

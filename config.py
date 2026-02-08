@@ -8,12 +8,14 @@ load_dotenv()
 # --- API KEYS & URLS ---
 PICOVOICE_KEY = os.getenv("PICOVOICE_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_KEY")
+GEMINI_STT_KEY = os.getenv("GEMINI_STT_KEY")
 GOOGLE_TTS_KEY = os.getenv("GOOGLE_TTS_KEY")
 HA_TOKEN = os.getenv("HA_TOKEN")
 HA_URL = os.getenv("HA_URL")
-MODEL_NAME = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+MODEL_NAME = os.getenv("GEMINI_MODEL")
 
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+GEMINI_STT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_STT_KEY}"
 
 # --- AUDIO SETTINGS ---
 WAKE_WORD = "jarvis"
@@ -47,9 +49,9 @@ SOUND_ERROR = os.path.join(SOUNDS_DIR, "alert_error-03.ogg")
 ALARM_SOUND = os.path.join(SOUNDS_DIR, "alarm_gentle.ogg")
 
 #  --- LOCATION SETTINGS ---
-# Biederstein: 48.1662948905428, 11.596001304713784
-MY_LAT = 48.1662948905428
-MY_LNG = 11.596001304713784
+# Massmann: 48.15354648083181, 11.559096247217958
+MY_LAT = 48.15354648083181
+MY_LNG = 11.559096247217958
 
 #  --- MEMORY PATHS ---
 MEMORY_FILE = os.path.join(BASE_DIR, "memory_data.json")
