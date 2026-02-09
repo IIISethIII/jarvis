@@ -1,3 +1,4 @@
+import datetime
 import math
 import struct
 import time
@@ -115,7 +116,7 @@ def main():
     system.init_audio_settings()
     sfx.init() 
     threading.Thread(target=timer.background_timer_check, daemon=True).start()
-    last_dream_time = time.time()
+    last_dream_date = None
 
     # Porcupine Init
     try:
@@ -340,12 +341,12 @@ def main():
                         continue
                     state.open_session(8)
 
-                # Dream Check (Runs every 1 hour if idle)
-                if time.time() - last_dream_time > 3600:
-                    # Only dream if NOT talking right now
+                now = datetime.datetime.now()
+                if now.hour == 4 and last_dream_date != now.date():
                     if not state.session_active():
+                        print(f" [System] 🌙 Nightly Maintenance (Datum: {now.date()})")
                         threading.Thread(target=memory.dream, daemon=True).start()
-                        last_dream_time = time.time()
+                        last_dream_date = now.date()
 
         except KeyboardInterrupt: pass
         finally:

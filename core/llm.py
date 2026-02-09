@@ -1,7 +1,7 @@
 # jarvis/core/llm.py
 import datetime
 import base64
-from jarvis.config import GEMINI_URL, SAFETY_SETTINGS
+from jarvis.config import get_gemini_url, SAFETY_SETTINGS
 from jarvis.state import CONVERSATION_HISTORY, HISTORY_LOCK
 from jarvis.utils import session
 from jarvis.core.tools import FUNCTION_DECLARATIONS, execute_tool
@@ -200,7 +200,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
         while step_count < MAX_STEPS:
             payload['contents'] = list(CONVERSATION_HISTORY)
             
-            resp = session.post(GEMINI_URL, json=payload, timeout=40)
+            resp = session.post(get_gemini_url(), json=payload, timeout=40)
             if resp.status_code != 200: 
                 print(f"API Error: {resp.text}")
                 return "Fehler bei der Verbindung."

@@ -2,19 +2,30 @@
 import os
 from dotenv import load_dotenv
 from aiy.leds import Color
+import itertools
 
 load_dotenv()
 
 # --- API KEYS & URLS ---
 PICOVOICE_KEY = os.getenv("PICOVOICE_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_KEY")
+
+_keys_env = os.getenv("GEMINI_KEYS") or os.getenv("GEMINI_KEY")
+GEMINI_KEYS = [k.strip() for k in _keys_env.split(',') if k.strip()]
+_key_cycle = itertools.cycle(GEMINI_KEYS)
+
 GEMINI_STT_KEY = os.getenv("GEMINI_STT_KEY")
 GOOGLE_TTS_KEY = os.getenv("GOOGLE_TTS_KEY")
 HA_TOKEN = os.getenv("HA_TOKEN")
 HA_URL = os.getenv("HA_URL")
 MODEL_NAME = os.getenv("GEMINI_MODEL")
 
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+def get_gemini_url():
+    current_key = next(_key_cycle)
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={current_key}"
+
+def get_next_key():
+    return next(_key_cycle)
+
 GEMINI_STT_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL_NAME}:generateContent?key={GEMINI_STT_KEY}"
 
 # --- AUDIO SETTINGS ---
