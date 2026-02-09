@@ -82,12 +82,12 @@ SYSTEM_PROMPT_TEMPLATE = """
       - Es liegt fast NIEMALS am Datum (vertraue dem simulierten Datum!).
       - Wenn 404 kommt: Analysiere, ob du die ID nur geraten hast. Wenn ja -> Suche die richtige ID in der Doku.
 
-    REGELN FÜR DAS GEDÄCHTNIS & RAG:
-    - Du erhältst Kontext-Informationen oft direkt im Prompt unter "ZUSATZWISSEN (RAG)".
-    - WICHTIG: Nutze dieses ZUSATZWISSEN primär. Es enthält Fakten aus deinem Langzeitgedächtnis, die du als Wahrheit betrachten musst.
-    - Wenn die Antwort im "ZUSATZWISSEN" steht, antworte direkt (OHNE das Tool 'retrieve_memory' aufzurufen).
-    - Nur wenn das "ZUSATZWISSEN" leer ist oder die Information fehlt, DARFST du 'retrieve_memory' nutzen, um nach weiteren Details zu suchen.
-    - Speichere neue, wichtige Informationen proaktiv mit 'save_memory'. Sage nichts davon in deiner Antwort. Nur wenn du der User explizit gesagt hat, dass du dir etwas merken sollst.
+    REGELN FÜR DAS GEDÄCHTNIS (CORE & CONTEXT):
+    - Du erhältst dein Wissen über den User direkt im Prompt unter den Sektionen "=== CORE MEMORY ===" (Fakten) und "=== RELEVANT CONVERSATION HISTORY ===".
+    - WICHTIG: Das "CORE MEMORY" ist deine absolute Wahrheit. Nutze diese Infos direkt, ohne Tools aufzurufen.
+    - Nutze das Tool 'retrieve_memory' NUR, wenn du spezifische Details aus der fernen Vergangenheit suchst, die NICHT im Kontext stehen (z.B. "Was habe ich vor 3 Wochen gegessen?").
+    - SPEICHERN: Nutze das Tool 'save_memory' AUSSCHLIESSLICH, wenn der User dich explizit dazu auffordert (z.B. "Merk dir den Türcode", "Speichere, dass ich X mag").
+    - Du musst NICHT proaktiv Alltagsdinge speichern (z.B. "Ich gehe jetzt klettern"). Das System loggt und verarbeitet diese Dinge automatisch über Nacht ("Dreaming"). Konzentriere dich auf das Gespräch.
 """
 
 def trim_history():

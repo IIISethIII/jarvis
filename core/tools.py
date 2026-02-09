@@ -6,38 +6,24 @@ from jarvis import config
 FUNCTION_DECLARATIONS = [
     {
         "name": "save_memory",
-        "description": "Speichert wichtige Fakten, Vorlieben oder Informationen über den User langfristig ab. Nutze dies, wenn der User sagt 'Merk dir das'.",
+        "description": "Speichert explizit einen Fakt oder Wunsch des Users für die Zukunft. Nutze dies nur, wenn der User sagt 'Merk dir X' oder 'Ich mag Y'.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "text": { "type": "STRING", "description": "Der Fakt (z.B. 'Paul trinkt Kaffee schwarz')." }
+                "text": { "type": "STRING", "description": "Der Fakt (z.B. 'Der Türcode ist 1234')." }
             },
             "required": ["text"]
         }
     },
     {
         "name": "retrieve_memory",
-        "description": "Sucht aktiv im Langzeitgedächtnis. Nutze dies bei Fragen nach Wissen ('WLAN Code?') ODER bei Begrüßungen ('Guten Morgen'), um User-Routinen zu checken.",
+        "description": "Sucht aktiv nach Details in vergangenen Gesprächen, falls du etwas nicht im aktuellen Kontext findest.",
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "search_query": { "type": "STRING", "description": "Suchbegriff (z.B. 'WLAN Passwort', 'Morgen Routine')." }
+                "search_query": { "type": "STRING", "description": "Suchbegriff (z.B. 'WLAN Passwort', 'Was habe ich gestern gegessen?')." }
             },
             "required": ["search_query"]
-        }
-    },
-    {
-        "name": "delete_memory",
-        "description": "Löscht eine spezifische Information aus dem Langzeitgedächtnis. Nutze dies, wenn der User sagt, dass etwas falsch ist oder sich geändert hat (z.B. 'Vergiss mein altes Passwort').",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "topic": {
-                    "type": "STRING",
-                    "description": "Das Thema oder der Inhalt, der gelöscht werden soll (z.B. 'Wlan Passwort' oder 'Mein Alter')."
-                }
-            },
-            "required": ["topic"]
         }
     },
     {
@@ -226,9 +212,8 @@ TOOL_IMPLEMENTATIONS = {
     'perform_google_search': google.perform_google_search_internal,
     'search_google_maps': google.perform_maps_search,
     'execute_python_code': system.run_local_python,
-    'save_memory': memory.save_memory,
-    'retrieve_memory': memory.retrieve_relevant_memories,
-    'delete_memory': memory.delete_memory,
+    'save_memory': memory.save_memory_tool,
+    'retrieve_memory': memory.search_memory_tool,
 }
 
 def execute_tool(name, args):

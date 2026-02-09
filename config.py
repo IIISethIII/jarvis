@@ -54,5 +54,11 @@ MY_LAT = 48.15354648083181
 MY_LNG = 11.559096247217958
 
 #  --- MEMORY PATHS ---
-MEMORY_FILE = os.path.join(BASE_DIR, "memory_data.json")
-VECTOR_FILE = os.path.join(BASE_DIR, "memory_vectors.npy")
+MEMORY_DIR = os.path.join(BASE_DIR, "memories")
+CORE_FILE = os.path.join(MEMORY_DIR, "core.md")         # The "BIOS" (Facts)
+EPISODIC_FILE = os.path.join(MEMORY_DIR, "episodic.md") # The "Daily Log"
+VECTOR_DB_FILE = os.path.join(MEMORY_DIR, "vectors.json") # Raw Text for search
+VECTOR_NPY_FILE = os.path.join(MEMORY_DIR, "vectors.npy") # Embeddings for search
+
+if not os.path.exists(MEMORY_DIR):
+    os.makedirs(MEMORY_DIR)
