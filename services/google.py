@@ -5,7 +5,7 @@ import time
 import wave
 import threading
 from aiy.leds import Leds
-from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, GEMINI_URL, GEMINI_STT_URL, MY_LAT, MY_LNG
+from jarvis.config import GOOGLE_TTS_KEY, DIM_BLUE, get_gemini_url, GEMINI_STT_URL, MY_LAT, MY_LNG
 from jarvis.utils import session
 from jarvis.services import sfx
 
@@ -20,11 +20,11 @@ def transcribe_audio(audio_bytes):
     
     b64_data = base64.b64encode(audio_bytes).decode('utf-8')
     
-    # Ein sehr strikter System-Prompt für reine Transkription
     prompt = """
-    Transkribiere das folgende Audio exakt Wort für Wort in die Sprache, die gesprochen wird (meist Deutsch).
-    Gib NUR den Text zurück. Keine Einleitung, keine Anmerkungen, keine Zeitstempel.
-    Wenn nichts gesprochen wird, gib nichts zurück.
+    Höre dir diese Audio-Datei an und transkribiere den gesprochenen Inhalt exakt in Text.
+    - Ignoriere Hintergrundgeräusche.
+    - Schreibe den vollen Satz aus.
+    - Gib nur den reinen Text zurück, ohne Zeitstempel oder Einleitung.
     """
 
     payload = {
@@ -35,8 +35,8 @@ def transcribe_audio(audio_bytes):
             ]
         }],
         "generationConfig": {
-            "temperature": 0.0, # Deterministisch für STT
-            "maxOutputTokens": 100
+            "temperature": 0.2,
+            "maxOutputTokens": 256
         }
     }
 
@@ -310,7 +310,7 @@ def perform_google_search_internal(query):
         "tools": [{"googleSearch": {}}]
     }
     try:
-        response = session.post(GEMINI_URL, json=payload, timeout=30)
+        response = session.post(get_gemini_url(), json=payload, timeout=30)
         if response.status_code == 200:
             result = response.json()
             try:
@@ -339,7 +339,7 @@ def perform_maps_search(query):
     }
     
     try:
-        response = session.post(GEMINI_URL, json=payload, timeout=30)
+        response = session.post(get_gemini_url(), json=payload, timeout=30)
         
         if response.status_code == 200:
             result = response.json()

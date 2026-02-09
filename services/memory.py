@@ -7,13 +7,16 @@ from jarvis.utils import session
 
 # --- EMBEDDING HELPER ---
 EMBEDDING_MODEL = "models/text-embedding-004"
-API_URL = f"https://generativelanguage.googleapis.com/v1beta/{EMBEDDING_MODEL}:embedContent?key={config.GEMINI_API_KEY}"
 
 def get_embedding(text):
     if not text or not text.strip(): return None
+
+    key = config.get_next_key()
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/{EMBEDDING_MODEL}:embedContent?key={key}"
+
     payload = {"model": EMBEDDING_MODEL, "content": {"parts": [{"text": text}]}}
     try:
-        response = session.post(API_URL, json=payload, timeout=5)
+        response = session.post(api_url, json=payload, timeout=5)
         if response.status_code == 200:
             values = response.json()['embedding']['values']
             return np.array(values, dtype=np.float32)
@@ -147,7 +150,7 @@ def dream():
     
     try:
         # Use the standard chat model
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{config.MODEL_NAME}:generateContent?key={config.GEMINI_API_KEY}"
+        url = config.get_gemini_url()
         resp = session.post(url, json=payload, timeout=30)
         
         if resp.status_code == 200:
