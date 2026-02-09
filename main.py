@@ -115,6 +115,7 @@ def main():
     system.init_audio_settings()
     sfx.init() 
     threading.Thread(target=timer.background_timer_check, daemon=True).start()
+    last_dream_time = time.time()
 
     # Porcupine Init
     try:
@@ -268,18 +269,23 @@ def main():
                             print(f" --> User (Transcribed): {user_text}")
 
                             if user_text:
-                                # 3. Get RAG context based on transcription
-                                rag = memory.retrieve_relevant_memories(user_text)
+                                # 1. NEW: Get Hybrid Context (Core + Vector)
+                                hybrid_context = memory.get_hybrid_context(user_text)
                                 
-                                # 4. Build the prompt with RAG context
-                                # We explicitly tell the model that the user is speaking in the audio part
-                                final_prompt = f"ZUSATZWISSEN(RAG):\n{rag}\n\n(Antworte auf die Audio-Eingabe des Users.)"
+                                # 2. Prepare Prompt (Injecting the context)
+                                final_prompt = f"{hybrid_context}\n\nUSER AUDIO TRANSCRIPT:\n{user_text}\n\n(Antworte dem User.)"
                                 
-                                # 5. Call Gemini with BOTH the prompt and the raw audio data
+                                # 3. Call Gemini (Pass the context-enriched prompt)
                                 response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=wav_data)
+                                
+                                # 4. NEW: Save Interaction
+                                # Remove technical tags before saving
+                                clean_resp = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
+                                memory.save_interaction(user_text, clean_resp)
                             else:
-                                # Handle silence/noise: just send the audio and see if Gemini hears something
-                                response = llm.ask_gemini(leds, text_prompt="(Der User hat etwas gesagt, aber die Transkription war leer. Hör genau hin.)", audio_data=wav_data)
+                                hybrid_context = memory.get_hybrid_context("") 
+                                fallback_prompt = f"{hybrid_context}\n\n(Der User hat etwas gesagt, aber die Transkription war leer. Hör auf die Audio-Daten.)"
+                                response = llm.ask_gemini(leds, text_prompt=fallback_prompt, audio_data=wav_data)
                                 
                         except Exception as e: 
                             print(f" [Main Loop Error] {e}")
@@ -333,6 +339,13 @@ def main():
                         flush_queue(audio_queue) # Auch hier wichtig
                         continue
                     state.open_session(8)
+
+                # Dream Check (Runs every 1 hour if idle)
+                if time.time() - last_dream_time > 3600:
+                    # Only dream if NOT talking right now
+                    if not state.session_active():
+                        threading.Thread(target=memory.dream, daemon=True).start()
+                        last_dream_time = time.time()
 
         except KeyboardInterrupt: pass
         finally:
