@@ -1,6 +1,23 @@
 # jarvis/core/tools.py
-from jarvis.services import ha, system, timer, google, sfx, memory
+from jarvis.services import ha, system, timer, google, sfx, memory, navigation
 from jarvis import config
+
+def handle_route_planning(destination, sport="fahrrad", start=None):
+    """
+    Wrapper, der die Route plant UND sie direkt ans Handy schickt.
+    """
+    text, url, duration = navigation.generate_komoot_url(destination, sport, start)
+    
+    if url:
+        # Automatisch ans Handy senden
+        ha.send_notification(
+            message=f"Route: {destination} ({sport})\n{duration if duration else ''}",
+            title="Komoot Route bereit",
+            url=url
+        )
+        return f"{text} Ich habe dir die Route in Komoot auf dein Handy geschickt."
+    else:
+        return text # Fehlermeldung
 
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
@@ -195,6 +212,57 @@ FUNCTION_DECLARATIONS = [
             "required": []
         }
     },
+    {
+        "name": "send_to_phone",
+        "description": "Nutze dieses Tool PROAKTIV, wann immer eine Antwort visuelle Elemente enthält (Bilder), zu lang zum Vorlesen ist (Rezepte, Code, lange Listen) oder eine Navigation erfordert. Du kannst Text, Links (Maps, Webseiten) und Bild-URLs senden.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "message": { "type": "STRING", "description": "Der Text der Nachricht (kurz und prägnant)." },
+                "title": { "type": "STRING", "description": "Titel der Nachricht." },
+                "url": { "type": "STRING", "description": "Optional: URL die geöffnet wird (z.B. Google Maps Link, Webseite, HomeAssistant Dashboard Link)." },
+                "image_url": { "type": "STRING", "description": "Optional: URL zu einem Bild, das direkt in der Notification angezeigt werden soll." },
+                "priority": { "type": "STRING", "enum": ["normal", "high"], "description": "Nutze 'high' nur für Alarme oder extrem wichtige Warnungen." }
+            },
+            "required": ["message"]
+        }
+    },
+    {
+        "name": "plan_outdoor_route",
+        "description": "Erstellt eine Route für Outdoor-Aktivitäten (Fahrrad, Rennrad, MTB, Wandern). Berechnet die geschätzte Dauer und generiert einen Link für die Komoot-App. Nutze dies, wenn der User fragt 'Wie lange brauche ich mit dem Rad nach X?' oder 'Route nach X'.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "destination": { "type": "STRING", "description": "Das Ziel (Stadt, Adresse, POI)." },
+                "sport": { 
+                    "type": "STRING", 
+                    "enum": ["rennrad", "fahrrad", "mtb", "wandern", "joggen"],
+                    "description": "Die Sportart. Default ist 'fahrrad'."
+                },
+                "start": { "type": "STRING", "description": "Optional: Ein anderer Startpunkt als Zuhause." }
+            },
+            "required": ["destination"]
+        }
+    },
+    {
+        "name": "get_weather_forecast",
+        "description": "Ruft die detaillierte Wettervorhersage ab. WICHTIG: Nutze dies IMMER für Fragen wie 'Regnet es gleich?', 'Kann ich joggen?', 'Wie wird das Wetter morgen?'. Der normale Status reicht dafür nicht.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "type": { 
+                    "type": "STRING", 
+                    "enum": ["hourly", "daily"],
+                    "description": "Nutze 'hourly' für heute/kurzfristig (Regenwahrscheinlichkeit) und 'daily' für die nächsten Tage." 
+                },
+                "entity_id": { 
+                    "type": "STRING", 
+                    "description": "Optional: Die Wetter-Entität (z.B. weather.open_meteo). Falls leer, wird automatisch eine gesucht." 
+                }
+            },
+            "required": ["type"]
+        }
+    },
 ]
 
 # 2. Implementation Map
@@ -214,6 +282,9 @@ TOOL_IMPLEMENTATIONS = {
     'execute_python_code': system.run_local_python,
     'save_memory': memory.save_memory_tool,
     'retrieve_memory': memory.search_memory_tool,
+    'send_to_phone': ha.send_notification,
+    'plan_outdoor_route': handle_route_planning,
+    'get_weather_forecast': ha.get_weather_forecast,
 }
 
 def execute_tool(name, args):
