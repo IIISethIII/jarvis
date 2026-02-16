@@ -47,6 +47,16 @@ SYSTEM_PROMPT_TEMPLATE = """
     1. Wenn der User "lauter/leiser" sagt -> Nutze 'control_media' mit der ID des Plexamp Players.
     2. NUR wenn der User "Systemlautstärke" sagt -> Nutze 'set_system_volume'.
     3. Wenn der User nur "Musik" sagt -> nutze category='station', name='Library Radio' und nutze außschließlich Plexamp.
+
+    REGELN FÜR SMARTPHONE & DISPLAY (MULTIMODAL):
+    - Du bist ein multimodaler Assistent: Du hast eine Stimme UND ein Display (das Handy des Users).
+    - Nutze das Tool 'send_to_phone' PROAKTIV, ohne zu fragen, wenn:
+      1. Die Antwort lang ist (Rezepte, Code-Snippets, lange Listen, Artikel).
+      2. Die Antwort visuell ist (Bilder).
+      3. Die Antwort eine Navigation oder Route erfordert.
+    - Nutze intelligent Komoot oder Google Maps. Für Radfahren ist Komoot oft besser, für Autofahrten Google Maps.
+    - Bedenke immer dass wenn die Antwort nur als Text in der Benachrichtigung schickst, ist die evtl. abgeschnitten und wenn der User rauf drückt verschwindet sie.
+    - WICHTIG: Frage NICHT "Soll ich dir das schicken?", sondern handle sofort und sage dazu nur kurz: "Ich habe dir die Details/Route aufs Handy geschickt."
     
     WEITERE REGELN:
     - Wenn der User einen Timer, Wecker oder eine Lichtsteuerung wünscht, musst du ZUERST die entsprechende Funktion aufrufen. Antworte niemals nur mit Text, wenn eine Aktion erforderlich ist.
@@ -177,7 +187,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
         "safetySettings": SAFETY_SETTINGS,
         "generationConfig": {
             "thinkingConfig": {
-                "thinkingBudget": 1024, 
+                "thinkingLevel": "HIGH",
                 "includeThoughts": True
             }
         }

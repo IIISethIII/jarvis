@@ -289,3 +289,93 @@ def manage_shopping_list(action, item=None):
             return "Nicht gefunden."
         except: return "Fehler."
     return "???"
+
+def send_notification(message, title="Jarvis", url=None, image_url=None, priority="normal"):
+    """
+    Universelles Tool, um Inhalte an das Smartphone zu senden.
+    Priority: 'high' (bricht durch 'Bitte nicht stören'), 'normal'.
+    """
+    # Sende an alle mobile_apps oder spezifisch an dein Handy
+    service_url = f"{HA_URL}/api/services/notify/notify" 
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    
+    data_payload = {}
+    
+    # 1. Klick-Aktion (URL öffnen)
+    if url:
+        data_payload["clickAction"] = url
+        # Optional: Button hinzufügen
+        data_payload["actions"] = [{"action": "URI", "title": "Öffnen", "uri": url}]
+
+    # 2. Bild anzeigen (z.B. von einer Kamera oder aus dem Web)
+    if image_url:
+        data_payload["image"] = image_url
+    
+    # 3. Priorität (TTL / Channel)
+    if priority == "high":
+        data_payload["ttl"] = 0
+        data_payload["priority"] = "high"
+        data_payload["channel"] = "alarm_stream" # Android spezifisch für Alarm-Sound
+
+    payload = {
+        "message": message,
+        "title": title,
+        "data": data_payload
+    }
+
+    try:
+        response = session.post(service_url, headers=headers, json=payload, timeout=5)
+        if response.status_code == 200:
+            return "Inhalt erfolgreich an das Display gesendet."
+        return f"Fehler beim Senden: {response.status_code}"
+    except Exception as e:
+        return f"Fehler: {e}"
+
+def get_weather_forecast(type="hourly", entity_id=None):
+    """
+    Ruft die Vorhersage ab. Optimiert für HA >= 2024.3 (service_response).
+    """
+    # 1. Entität bestimmen
+    target = entity_id
+    if not target:
+        possible = [eid for eid in global_state.AVAILABLE_LIGHTS.values() if eid.startswith("weather.")]
+        priority = [p for p in possible if "open_meteo" in p or "home" in p]
+        target = priority[0] if priority else (possible[0] if possible else None)
+
+    if not target:
+        return "Keine Wetter-Entität gefunden."
+
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    limit = 12 if type == "hourly" else 5
+
+    # --- STRATEGIE A: Moderner API Call mit return_response ---
+    # WICHTIG: Das ?return_response=true ist für die Datenrückgabe zwingend.
+    url_service = f"{HA_URL}/api/services/weather/get_forecasts?return_response=true"
+    
+    try:
+        # Entity_id muss laut HA-Standard oft als Liste übergeben werden
+        payload = {"entity_id": [target], "type": type}
+        response = session.post(url_service, headers=headers, json=payload, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Dein Log zeigt: Die Daten liegen in 'service_response' -> 'entity_id' -> 'forecast'
+            forecast_list = data.get("service_response", {}).get(target, {}).get('forecast', [])
+            
+            if forecast_list:
+                return json.dumps(forecast_list[:limit], indent=2)
+    except Exception as e:
+        print(f"[Weather Debug] Modern API failed: {e}")
+
+    # --- STRATEGIE B: Legacy Fallback (Attribut) ---
+    url_state = f"{HA_URL}/api/states/{target}"
+    try:
+        r = session.get(url_state, headers=headers, timeout=5)
+        if r.status_code == 200:
+            forecast_list = r.json().get('attributes', {}).get('forecast', [])
+            if forecast_list:
+                return json.dumps(forecast_list[:limit], indent=2)
+    except Exception:
+        pass
+
+    return f"Fehler: Konnte keine Wetterdaten für {target} abrufen."
