@@ -1,23 +1,12 @@
 # jarvis/core/tools.py
-from jarvis.services import ha, system, timer, google, sfx, memory, navigation
+import jarvis.services.ha as ha
+import jarvis.services.system as system
+import jarvis.services.timer as timer
+import jarvis.services.google as google
+import jarvis.services.sfx as sfx
+import jarvis.services.memory as memory
+import jarvis.services.navigation as navigation
 from jarvis import config
-
-def handle_route_planning(destination, sport="fahrrad", start=None):
-    """
-    Wrapper, der die Route plant UND sie direkt ans Handy schickt.
-    """
-    text, url, duration = navigation.generate_komoot_url(destination, sport, start)
-    
-    if url:
-        # Automatisch ans Handy senden
-        ha.send_notification(
-            message=f"Route: {destination} ({sport})\n{duration if duration else ''}",
-            title="Komoot Route bereit",
-            url=url
-        )
-        return f"{text} Ich habe dir die Route in Komoot auf dein Handy geschickt."
-    else:
-        return text # Fehlermeldung
 
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
@@ -229,7 +218,7 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "plan_outdoor_route",
-        "description": "Erstellt eine Route für Outdoor-Aktivitäten (Fahrrad, Rennrad, MTB, Wandern). Berechnet die geschätzte Dauer und generiert einen Link für die Komoot-App. Nutze dies, wenn der User fragt 'Wie lange brauche ich mit dem Rad nach X?' oder 'Route nach X'.",
+        "description": "Erstellt eine Komoot-Route (Fahrrad/Wandern). Gibt Dauer, Distanz und URL zurück. WICHTIG: Sendet NICHT automatisch. Du musst danach 'send_to_phone' mit der generierten URL aufrufen!",
         "parameters": {
             "type": "OBJECT",
             "properties": {
@@ -283,7 +272,7 @@ TOOL_IMPLEMENTATIONS = {
     'save_memory': memory.save_memory_tool,
     'retrieve_memory': memory.search_memory_tool,
     'send_to_phone': ha.send_notification,
-    'plan_outdoor_route': handle_route_planning,
+    'plan_outdoor_route': navigation.handle_route_planning,
     'get_weather_forecast': ha.get_weather_forecast,
 }
 
