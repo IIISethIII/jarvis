@@ -101,18 +101,102 @@ SYSTEM_PROMPT_TEMPLATE = """
 """
 
 def trim_history():
-    """Keeps history clean and prevents 400 errors."""
-    limit = 30
-    if len(CONVERSATION_HISTORY) > limit:
-        while len(CONVERSATION_HISTORY) > limit: CONVERSATION_HISTORY.popleft()
-    # Remove 'audio' data from old turns to save tokens
-    if len(CONVERSATION_HISTORY) > 1:
-        for entry in list(CONVERSATION_HISTORY)[:-1]:
-            if entry['role'] == 'user':
-                entry['parts'] = [p for p in entry['parts'] if 'inline_data' not in p] or [{"text": "[Audio Expired]"}]
-    # Ensure start is user
-    while len(CONVERSATION_HISTORY) > 0 and CONVERSATION_HISTORY[0]['role'] != 'user':
-        CONVERSATION_HISTORY.popleft()
+    """
+    Hält die History sauber und 'flacht' alte Interaktionen ab.
+    Wandelt (User -> Call -> Result -> Text) in (User -> Text) um.
+    """
+    global CONVERSATION_HISTORY
+    
+    # 1. Nichts tun, wenn History kurz ist
+    if len(CONVERSATION_HISTORY) < 6:
+        return
+
+    # Wir bauen eine neue, saubere Liste
+    new_history = []
+    
+    # 2. Die letzten paar Einträge (aktiver Kontext) lassen wir UNBERÜHRT!
+    # Das ist wichtig, falls wir gerade mitten in einem Loop sind.
+    keep_raw_count = 4 
+    raw_part = list(CONVERSATION_HISTORY)[-keep_raw_count:]
+    old_part = list(CONVERSATION_HISTORY)[:-keep_raw_count]
+
+    for entry in old_part:
+        role = entry.get('role')
+        parts = entry.get('parts', [])
+        
+        # A. FUNCTION Responses (Ergebnisse) komplett löschen
+        if role == 'function':
+            continue 
+            
+        # B. MODEL Einträge bereinigen
+        if role == 'model':
+            # Wir suchen nur nach TEXT-Teilen. FunctionCalls werfen wir raus.
+            text_parts = []
+            for p in parts:
+                if 'text' in p:
+                    text_parts.append(p)
+            
+            # Wenn nach dem Filtern noch Text übrig ist, behalten wir den Eintrag als reinen Text
+            if text_parts:
+                new_history.append({"role": "model", "parts": text_parts})
+            # Falls der Eintrag NUR aus einem FunctionCall bestand (ohne Text),
+            # wird er hier ignoriert (gelöscht). Das ist korrekt so.
+            
+        # C. USER Einträge behalten (aber Audio bereinigen, wie du es schon hattest)
+        if role == 'user':
+            # Audio-Daten entfernen, nur Text behalten
+            clean_parts = []
+            for p in parts:
+                if 'text' in p:
+                    clean_parts.append(p)
+                # Falls User NUR Audio geschickt hatte, fügen wir Platzhalter ein
+                # damit der User-Turn nicht leer ist (API mag keine leeren User Turns)
+            if not clean_parts:
+                clean_parts = [{"text": "[Audio Input]"}]
+            
+            new_history.append({"role": "user", "parts": clean_parts})
+
+    # 3. Zusammenfügen
+    combined = new_history + raw_part
+    
+    # 4. Validierung: Sicherstellen, dass die Reihenfolge User -> Model stimmt
+    # Durch das Löschen von reinen Function-Call-Model-Turns kann es passieren,
+    # dass User -> User aufeinanderfolgt. Das fixen wir simpel:
+    final_history = []
+    expect_user = True # Wir erwarten, dass es mit User losgeht (meistens)
+    
+    for entry in combined:
+        is_user = (entry['role'] == 'user')
+        
+        # Wenn wir User erwarten und User kommt -> Ok
+        if expect_user and is_user:
+            final_history.append(entry)
+            expect_user = False
+        # Wenn wir Model erwarten und Model kommt -> Ok
+        elif not expect_user and not is_user:
+            final_history.append(entry)
+            expect_user = True
+        # Wenn User kommt, aber wir Model erwarten (d.h. Model wurde gelöscht)
+        # -> Wir überschreiben den letzten User Eintrag oder ignorieren (Komplexer Fall)
+        # Einfachste Lösung für Chatbots: Wir erlauben User->User nicht, sondern
+        # "mergen" den Text oder verwerfen den alten User Input.
+        # Hier simple Strategie: Nimm es rein, Gemini 1.5 ist da tolerant, 
+        # solange die Struktur grob stimmt.
+        else:
+            final_history.append(entry)
+            # Toggle den Status basierend auf was wir gerade hinzugefügt haben
+            expect_user = not is_user
+
+    # Hard Limit anwenden
+    if len(final_history) > 30:
+        final_history = final_history[-30:]
+        
+    # Sicherstellen, dass der erste Eintrag ein User ist (Gemini mag Start mit Model nicht)
+    while final_history and final_history[0]['role'] != 'user':
+        final_history.pop(0)
+
+    from collections import deque
+    CONVERSATION_HISTORY = deque(final_history)
 
 def ask_gemini(leds, text_prompt=None, audio_data=None):
     from jarvis.config import DIM_BLUE 

@@ -98,3 +98,15 @@ def generate_komoot_url(end_location, sport="touringbicycle", start_location=Non
         result_text += f" Geschätzte Zeit (Real): ca. {duration_str}."
     
     return result_text, url, duration_str
+
+def handle_route_planning(destination, sport="fahrrad", start=None):
+    """
+    Wrapper für das Tool. Ruft die URL ab und gibt sie formatiert zurück.
+    """
+    text, url, duration = generate_komoot_url(destination, sport, start)
+    
+    if url:
+        # Hier geben wir die URL zurück, damit Gemini sie für send_to_phone nutzen kann
+        return f"{text} Link: {url}"
+    else:
+        return text
