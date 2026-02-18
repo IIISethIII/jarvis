@@ -7,6 +7,7 @@ from jarvis.utils import session
 from jarvis.core.tools import FUNCTION_DECLARATIONS, execute_tool
 from aiy.leds import Pattern, Leds, Color
 from jarvis import state
+import jarvis.services.ha as ha
 
 # WICHTIG: Kein 'f' vor dem String! Und {time_str} statt {date_str} nutzen.
 SYSTEM_PROMPT_TEMPLATE = """
@@ -21,6 +22,7 @@ SYSTEM_PROMPT_TEMPLATE = """
     KONTEXT ÜBER PAUL:
     - Zeit aktuell: {time_str}
     - Verfügbare Smart-Home Geräte: {devices}
+    - Standort: {people_locations}
 
     KOMMUNIKATIONSSTIL:
     - Casual aber respektvoll (Du-Form)
@@ -57,6 +59,9 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Nutze intelligent Komoot oder Google Maps. Für Radfahren ist Komoot oft besser, für Autofahrten Google Maps.
     - Bedenke immer dass wenn die Antwort nur als Text in der Benachrichtigung schickst, ist die evtl. abgeschnitten und wenn der User rauf drückt verschwindet sie.
     - WICHTIG: Frage NICHT "Soll ich dir das schicken?", sondern handle sofort und sage dazu nur kurz: "Ich habe dir die Details/Route aufs Handy geschickt."
+
+    STANDORT LOGIK:
+    - Wenn der User nicht zuhause ist (siehe 'Standort'), sollltest du <SILENT> am Ende deiner Antwort hinzufügen und eine Benachrichtigung aufs Handy schicken, anstatt laut zu antworten.
     
     WEITERE REGELN:
     - Wenn der User einen Timer, Wecker oder eine Lichtsteuerung wünscht, musst du ZUERST die entsprechende Funktion aufrufen. Antworte niemals nur mit Text, wenn eine Aktion erforderlich ist.
@@ -256,12 +261,15 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
     else:
         device_list_str = "Keine Geräte gefunden."
 
+    people_locs = ha.get_all_person_locations()
+
     # Payload erstellen (jetzt mit device_list_str statt device_list)
     payload = {
         "system_instruction": {
             "parts": [{
                 "text": SYSTEM_PROMPT_TEMPLATE.format(
-                    time_str=now_str, 
+                    time_str=now_str,
+                    people_locations=people_locs,
                     devices=device_list_str
                 )
             }]

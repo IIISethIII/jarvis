@@ -172,8 +172,17 @@ def main():
         flush_queue(audio_queue) # Start clean
         
         last_log_time = time.time()
+        last_mailbox_check = time.time()
 
         mic_fail_count = 0
+
+        def update_ha_context_bg():
+            try:
+                # print(" [Debug] Refreshing HA Context...")
+                new_ctx, new_lookup = ha.fetch_ha_context()
+                if new_ctx: state.HA_CONTEXT = new_ctx
+                if new_lookup: state.AVAILABLE_LIGHTS.update(new_lookup)
+            except: pass
         
         try:
             while True:
@@ -200,53 +209,67 @@ def main():
                     time.sleep(3.0) 
                     continue
 
-                # 2. VAD & Wake Word Logic (Normal)
-                if state.session_active():
+                # MAILBOX CHECK
+                incoming_text = None
+                if time.time() - last_mailbox_check > 1.5:
+                    last_mailbox_check = time.time()
+                    try:
+                        incoming_text = ha.get_input_text_state("input_text.jarvis_chat")
+                        if incoming_text and len(incoming_text) > 1:
+                            ha.clear_input_text("input_text.jarvis_chat")
+                            print(f"\n--> 📩 Remote: {incoming_text}")
+                            leds.update(Leds.rgb_on(Color.CYAN))
+                            flush_queue(audio_queue) # Clear mic buffer so we don't record noise immediately
+                    except: pass
+
+                # 2. VAD & Wake Word Logic (OR Text)
+                if state.session_active() or incoming_text:
+
+                    threading.Thread(target=update_ha_context_bg, daemon=True).start()
 
                     lower_volume()
+                    user_text = None
+                    wav_data = None
 
-                    current_brightness = 0.4; target_brightness = 0.4
-                    leds.update(Leds.rgb_on(config.DIM_PURPLE))
-                    frames = []
-                    is_speaking = False; speech_consecutive = 0; start_time = time.time(); silence_start = None
-                    
-                    while True:
-                        try:
-                            pcm_vad = audio_queue.get(timeout=1.0)
-                        except queue.Empty: break 
+                    if not incoming_text:
+                        current_brightness = 0.4; target_brightness = 0.4
+                        leds.update(Leds.rgb_on(config.DIM_PURPLE))
+                        frames = []
+                        is_speaking = False; speech_consecutive = 0; start_time = time.time(); silence_start = None
                         
-                        frames.append(pcm_vad)
-                        prob = cobra.process(struct.unpack_from("h" * cobra.frame_length, pcm_vad))
-                        
-                        if prob > 0.10: target_brightness = 0.85; speech_consecutive += 1
-                        else: target_brightness = 0.4; speech_consecutive = 0
-                        
-                        step = 0.15
-                        if current_brightness < target_brightness: current_brightness = min(target_brightness, current_brightness + step)
-                        elif current_brightness > target_brightness: current_brightness = max(target_brightness, current_brightness - step)
-                        if abs(current_brightness - target_brightness) > 0.01 or step > 0:
-                             leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
-
-                        if speech_consecutive >= 2: is_speaking = True; silence_start = None
-                        elif is_speaking:
-                             if not silence_start: silence_start = time.time()
-                             elif time.time() - silence_start > 1.5: break
-                        elif time.time() - start_time > 8.0: break
-
-                        # --- RESTORED: Dynamic HA Context Update ---
-                        # Ich habe es auf "Genau bei Frame 25" geändert, damit es nur einmal pro Satz läuft
-                        # und nicht das System durch Dauerfeuer blockiert.
-                        if len(frames) == 25:
-                            def update_ha_bg():
-                                try:
-                                    # print(" [Debug] Hole HA Kontext...")
-                                    new_ctx, new_lookup = ha.fetch_ha_context()
-                                    if new_ctx: state.HA_CONTEXT = new_ctx
-                                    if new_lookup: state.AVAILABLE_LIGHTS.update(new_lookup)
-                                except: pass
+                        while True:
+                            try:
+                                pcm_vad = audio_queue.get(timeout=1.0)
+                            except queue.Empty: break 
                             
-                            # Starten als Thread, damit die Audio-Schleife NICHT wartet
-                            threading.Thread(target=update_ha_bg, daemon=True).start()
+                            frames.append(pcm_vad)
+                            prob = cobra.process(struct.unpack_from("h" * cobra.frame_length, pcm_vad))
+                            
+                            if prob > 0.10: target_brightness = 0.85; speech_consecutive += 1
+                            else: target_brightness = 0.4; speech_consecutive = 0
+                            
+                            step = 0.15
+                            if current_brightness < target_brightness: current_brightness = min(target_brightness, current_brightness + step)
+                            elif current_brightness > target_brightness: current_brightness = max(target_brightness, current_brightness - step)
+                            if abs(current_brightness - target_brightness) > 0.01 or step > 0:
+                                leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
+
+                            if speech_consecutive >= 2: is_speaking = True; silence_start = None
+                            elif is_speaking:
+                                if not silence_start: silence_start = time.time()
+                                elif time.time() - silence_start > 1.5: break
+                            elif time.time() - start_time > 8.0: break
+
+                        if is_speaking:
+                            with wave.open("/tmp/req.wav", 'wb') as wf:
+                                wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
+                                wf.writeframes(b''.join(frames))
+
+                    # B) TEXT MODE: Skip Recording
+                    else:
+                        is_speaking = True
+                        user_text = incoming_text
+                        wav_data = None
 
                     if is_speaking:
                         restore_volume()
@@ -254,20 +277,14 @@ def main():
                         leds.pattern = Pattern.breathe(1000)
                         leds.update(Leds.rgb_pattern(config.DIM_BLUE))
                         
-                        with wave.open("/tmp/req.wav", 'wb') as wf:
-                            wf.setnchannels(config.CHANNELS); wf.setsampwidth(2); wf.setframerate(config.RATE)
-                            wf.writeframes(b''.join(frames))
-                        
                         response = "Fehler."
                         try:
-                            # 1. Read the raw bytes for the direct Audio-Input to Gemini
-                            with open("/tmp/req.wav", "rb") as f: 
-                                wav_data = f.read()
-                            
-                            # 2. Fast transcription for RAG lookup
-                            # We still need this to know WHAT to search for in memory
-                            user_text = google.transcribe_audio(wav_data)
-                            print(f" --> User (Transcribed): {user_text}")
+                            # Only transcribe if we don't have text yet
+                            if not user_text:
+                                with open("/tmp/req.wav", "rb") as f: 
+                                    wav_data = f.read()
+                                user_text = google.transcribe_audio(wav_data)
+                                print(f" --> User (Transcribed): {user_text}")
 
                             if user_text:
                                 # 1. NEW: Get Hybrid Context (Core + Vector)
@@ -293,10 +310,16 @@ def main():
                         finally: 
                             sfx.stop_loop()
 
-                        clean_res = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
+                        clean_resp = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
                         
-                        # TTS spricht hier (dauert ein paar Sekunden)
-                        was_interrupted = google.speak_text(leds, clean_res, interrupt_check=check_for_interruption)
+                        if "<SILENT>" in clean_resp:
+                            clean_resp = clean_resp.replace("<SILENT>", "").strip()
+                            print(" [Output] <SILENT>")
+                            was_interrupted = False
+                        else:
+                            was_interrupted = google.speak_text(leds, clean_resp, interrupt_check=check_for_interruption)
+
+                        ha.set_state("sensor.jarvis_last_response", clean_resp)
 
                         # WICHTIG: Queue leeren, damit wir nicht Jarvis eigenes Echo hören
                         flush_queue(audio_queue)

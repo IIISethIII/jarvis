@@ -379,3 +379,81 @@ def get_weather_forecast(type="hourly", entity_id=None):
         pass
 
     return f"Fehler: Konnte keine Wetterdaten für {target} abrufen."
+
+def get_input_text_state(entity_id):
+    """Reads the mailbox content."""
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    try:
+        r = session.get(f"{HA_URL}/api/states/{entity_id}", headers=headers, timeout=2)
+        if r.status_code == 200:
+            state = r.json().get('state', '')
+            return state if state not in ["unknown", "unavailable"] else ""
+    except: pass
+    return ""
+
+def clear_input_text(entity_id):
+    """Empties the mailbox."""
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    try:
+        session.post(f"{HA_URL}/api/services/input_text/set_value", headers=headers, json={"entity_id": entity_id, "value": ""}, timeout=2)
+    except: pass
+
+def get_all_person_locations():
+    """
+    Fetches the status and coordinates of ALL 'person.*' entities.
+    Returns a string like:
+    - Paul: home (Lat: 48.123, Lon: 11.456)
+    - Anna: work (Lat: 48.987, Lon: 11.654)
+    """
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    try:
+        # We fetch all states and filter python-side to save API calls
+        r = session.get(f"{HA_URL}/api/states", headers=headers, timeout=3)
+        if r.status_code == 200:
+            people = []
+            for entity in r.json():
+                eid = entity['entity_id']
+                if eid.startswith("person."):
+                    name = entity.get('attributes', {}).get('friendly_name', eid)
+                    state = entity['state']
+                    
+                    # Get GPS if available
+                    lat = entity.get('attributes', {}).get('latitude')
+                    lon = entity.get('attributes', {}).get('longitude')
+                    
+                    if lat and lon:
+                        geo_str = f"(GPS: {lat}, {lon})"
+                    else:
+                        geo_str = "(No GPS)"
+                        
+                    people.append(f"- {name}: {state} {geo_str}")
+            
+            return "\n".join(people) if people else "Keine Personen gefunden."
+    except Exception as e:
+        print(f"[HA Error] Person Fetch: {e}")
+        return "Fehler beim Abrufen der Standorte."
+    
+def set_state(entity_id, state_value, attributes=None):
+    """
+    Manually sets the state of an entity in Home Assistant via API.
+    Used to update the 'sensor.jarvis_last_response' for the dashboard.
+    """
+    try:
+        url = f"{HA_URL}/api/states/{entity_id}"
+        headers = {
+            "Authorization": "Bearer " + HA_TOKEN,
+            "content-type": "application/json",
+        }
+        
+        payload = {"state": str(state_value)}
+        if attributes:
+            payload["attributes"] = attributes
+            
+        # Assuming 'session' is your requests.Session() object defined in this file
+        r = session.post(url, headers=headers, json=payload, timeout=2)
+        
+        if r.status_code not in [200, 201]:
+            print(f" [HA Error] Failed to set state: {r.status_code} - {r.text}")
+            
+    except Exception as e:
+        print(f" [HA Error] set_state failed: {e}")
