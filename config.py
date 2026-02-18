@@ -58,6 +58,7 @@ SOUND_THINKING = os.path.join(SOUNDS_DIR, "ui_loading.ogg")
 SOUND_SUCCESS = os.path.join(SOUNDS_DIR, "state-change_confirm-up.ogg")
 SOUND_ERROR = os.path.join(SOUNDS_DIR, "alert_error-03.ogg")
 ALARM_SOUND = os.path.join(SOUNDS_DIR, "alarm_gentle.ogg")
+ALARM_TIMEOUT = 120 # Seconds
 
 #  --- LOCATION SETTINGS ---
 # Massmann: 48.15354648083181, 11.559096247217958
