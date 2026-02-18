@@ -19,26 +19,29 @@ def init():
     except Exception as e:
         print(f" [SFX Error] Init failed: {e}")
 
-def get_sound(path_or_key):
+def get_sound(path_or_key, volume=0.9):
     if not _initialized: init()
-    if path_or_key in _sounds: return _sounds[path_or_key]
-    
-    if os.path.exists(path_or_key):
+    s = None
+    if path_or_key in _sounds:
+        s = _sounds[path_or_key]
+    elif os.path.exists(path_or_key):
         try:
             s = pygame.mixer.Sound(path_or_key)
-            s.set_volume(0.9)
             _sounds[path_or_key] = s
-            return s
         except Exception as e:
             print(f" [SFX Error] Load failed: {e}")
-    return None
+            return None
 
-def play(path_or_key):
+    if s:
+        s.set_volume(volume)
+    return s
+
+def play(path_or_key, volume=0.9):
     """Spielt Sound asynchron (Feuer & Vergessen)."""
-    s = get_sound(path_or_key)
+    s = get_sound(path_or_key, volume=volume)
     if s: s.play()
 
-def play_blocking(path_or_key, interrupt_check=None):
+def play_blocking(path_or_key, interrupt_check=None, volume=0.9):
     """
     Spielt Sound und blockiert, erlaubt aber Unterbrechung.
     interrupt_check: Eine Funktion, die True zurückgibt, wenn abgebrochen werden soll.
@@ -51,7 +54,7 @@ def play_blocking(path_or_key, interrupt_check=None):
     if os.path.exists(path_or_key):
         try:
             s = pygame.mixer.Sound(path_or_key)
-            s.set_volume(0.9) 
+            s.set_volume(volume) 
             channel = s.play()
             
             # Warten bis fertig ODER Unterbrechung
@@ -68,10 +71,10 @@ def play_blocking(path_or_key, interrupt_check=None):
             
     return was_interrupted
 
-def play_loop(path_or_key):
+def play_loop(path_or_key, volume=0.9):
     global _current_loop_channel
     stop_loop()
-    s = get_sound(path_or_key)
+    s = get_sound(path_or_key, volume=volume)
     if s:
         _current_loop_channel = s.play(loops=-1, fade_ms=200)
 
