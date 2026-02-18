@@ -358,7 +358,7 @@ def main():
 
                         if was_interrupted:
                              # Wenn unterbrochen wurde, verhalten wir uns wie bei einem Wake-Word
-                             sfx.play(config.SOUND_WAKE)
+                             sfx.play(config.SOUND_WAKE, volume=1.0)
                              lower_volume()
                              state.IS_PROCESSING = False
                              state.open_session(8)
@@ -369,7 +369,7 @@ def main():
                             # --- RESTORED: Fade Effect ---
                             fade_color(leds, config.DIM_BLUE, config.DIM_PURPLE)
                             state.open_session(8)
-                            sfx.play(config.SOUND_WAKE)
+                            sfx.play(config.SOUND_WAKE, volume=1.0)
                         else:
                             state.SESSION_OPEN_UNTIL = 0
                             leds.update(Leds.rgb_off())
@@ -390,7 +390,7 @@ def main():
 
                 if porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm)) >= 0:
                     print("\n--> Wake Word Detected")
-                    sfx.play(config.SOUND_WAKE)
+                    sfx.play(config.SOUND_WAKE, volume=1.0)
                     lower_volume()
                     if state.ALARM_PROCESS:
                         timer.stop_alarm_sound()
