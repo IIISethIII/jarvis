@@ -21,6 +21,7 @@ SESSION_OPEN_UNTIL = 0
 # Timers & Alarms
 ACTIVE_TIMERS = []
 ALARM_PROCESS = None # Boolean flag or process handle
+ALARM_TIMEOUT_TIMER = None
 
 PREVIOUS_VOLUME = None
 
