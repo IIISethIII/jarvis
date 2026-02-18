@@ -10,6 +10,10 @@ HISTORY_LOCK = threading.Lock()
 # LED State
 LED_LOCKED = False
 
+# Cancellation
+CANCEL_REQUESTED = False
+IS_PROCESSING = False
+
 # Device Awareness
 AVAILABLE_LIGHTS = {}
 
