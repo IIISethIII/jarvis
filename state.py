@@ -27,6 +27,12 @@ ACTIVE_TIMERS = []
 ALARM_PROCESS = None # Boolean flag or process handle
 ALARM_TIMEOUT_TIMER = None
 
+# Autonomous Mode
+WAKEUP_COUNT = 0
+LAST_WAKEUP_DATE = None
+NEXT_WAKEUP = 0
+WAKEUP_REASON = "Routine Check"
+
 PREVIOUS_VOLUME = None
 
 def open_session(seconds=8):

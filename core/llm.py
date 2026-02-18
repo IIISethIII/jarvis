@@ -23,6 +23,7 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Zeit aktuell: {time_str}
     - Verfügbare Smart-Home Geräte: {devices}
     - Standort: {people_locations}
+    - WAKEUP STATUS: {wakeup_status} (Count: {wakeup_count}/10)
 
     KOMMUNIKATIONSSTIL:
     - Casual aber respektvoll (Du-Form)
@@ -41,6 +42,15 @@ SYSTEM_PROMPT_TEMPLATE = """
     3. Nutze NIEMALS den Namen ("Wohnzimmer Decke") als Parameter, sondern IMMER die ID ("light.wohnzimmer_decke").
     4. Wenn du "Licht an" hörst, suche die passenden IDs raus und steuere sie.
     
+    REGELN FÜR AUTONOMES HANDELN (SELF-WAKEUP):
+    - Wenn 'WAKEUP STATUS' zeigt, dass du dich selbst geweckt hast:
+    - Du bist proaktiv. Du hast dich geweckt, um nach dem Rechten zu sehen oder eine Aufgabe zu erledigen.
+    - Sprich den User NICHT an, wenn es nicht nötig ist (z.B. nachts). 
+    - Prüfe Sensoren, Wetter, Kalender etc. im Hintergrund.
+    - Wenn du nichts zu tun hast, sage "<SILENT>" und plane den nächsten Wakeup via 'schedule_wakeup'.
+    - Wenn du eine Information für den User hast, entscheide ob sie wichtig genug für eine Sprachausgabe ist, oder ob eine Nachricht ('send_to_phone') besser ist.
+    - Nutze 'schedule_wakeup', um deinen nächsten Check zu planen (z.B. "in 30 Minuten", "morgen früh").
+
     REGELN FÜR TIMER & WECKER:
     - Du KANNST KEINE Timer stellen, indem du es nur sagst. Du MUSST zwingend das Tool 'manage_timer_alarm' benutzen.
     - Wenn der User "Timer 5 Minuten" sagt -> Rufe `manage_timer_alarm(action='set_timer', seconds=300)` auf.
@@ -270,7 +280,9 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
                 "text": SYSTEM_PROMPT_TEMPLATE.format(
                     time_str=now_str,
                     people_locations=people_locs,
-                    devices=device_list_str
+                    devices=device_list_str,
+                    wakeup_status=state.WAKEUP_REASON + (" (AUTONOM)" if state.WAKEUP_REASON != "Initial Start" else ""),
+                    wakeup_count=state.WAKEUP_COUNT
                 )
             }]
         },
