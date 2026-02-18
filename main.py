@@ -1,5 +1,6 @@
 import datetime
 import math
+import random
 import struct
 import time
 import wave
@@ -134,8 +135,15 @@ def main():
         def on_button_press():
             if state.ALARM_PROCESS or state.ACTIVE_TIMERS:
                 timer.stop_alarm_sound(); state.LED_LOCKED=True; leds.update(Leds.rgb_on(Color.RED)); time.sleep(1); state.LED_LOCKED=False
+            elif state.session_active() or state.IS_PROCESSING:
+                state.CANCEL_REQUESTED = True
+                state.LED_LOCKED=True
+                leds.update(Leds.rgb_on(Color.RED))
+                time.sleep(0.5)
+                state.LED_LOCKED=False
             else:
-                state.LED_LOCKED=True; leds.update(Leds.rgb_on(Color.GREEN)); time.sleep(0.2); state.LED_LOCKED=False
+                rand_color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+                state.LED_LOCKED=True; leds.update(Leds.rgb_on(rand_color)); time.sleep(0.2); state.LED_LOCKED=False
         board.button.when_pressed = on_button_press
 
         # --- MULTIPROCESSING SETUP ---
@@ -151,6 +159,10 @@ def main():
         audio_proc = start_audio_process()
 
         def check_for_interruption():
+            if state.CANCEL_REQUESTED:
+                print("\n--> CANCELLATION DETECTED!")
+                return True
+
             try:
                 # Wir schauen, ob Audio in der Queue ist
                 while not audio_queue.empty():
@@ -224,6 +236,7 @@ def main():
 
                 # 2. VAD & Wake Word Logic (OR Text)
                 if state.session_active() or incoming_text:
+                    state.IS_PROCESSING = True
 
                     threading.Thread(target=update_ha_context_bg, daemon=True).start()
 
@@ -254,6 +267,7 @@ def main():
                             if abs(current_brightness - target_brightness) > 0.01 or step > 0:
                                 leds.update(Leds.rgb_on(Color.blend(Color.PURPLE, Color.BLACK, current_brightness)))
 
+                            if state.CANCEL_REQUESTED: break 
                             if speech_consecutive >= 2: is_speaking = True; silence_start = None
                             elif is_speaking:
                                 if not silence_start: silence_start = time.time()
@@ -270,6 +284,16 @@ def main():
                         is_speaking = True
                         user_text = incoming_text
                         wav_data = None
+
+                    # CANCELLATION CHECK (After VAD/Recording)
+                    if state.CANCEL_REQUESTED:
+                        print(" [System] Cancelled by User.")
+                        state.CANCEL_REQUESTED = False
+                        state.SESSION_OPEN_UNTIL = 0
+                        state.IS_PROCESSING = False
+                        leds.update(Leds.rgb_off())
+                        flush_queue(audio_queue)
+                        continue
 
                     if is_speaking:
                         restore_volume()
@@ -294,7 +318,10 @@ def main():
                                 final_prompt = f"{hybrid_context}\n\nUSER AUDIO TRANSCRIPT:\n{user_text}\n\n(Antworte dem User.)"
                                 
                                 # 3. Call Gemini (Pass the context-enriched prompt)
-                                response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=wav_data)
+                                if state.CANCEL_REQUESTED: 
+                                    response = "<SILENT>" # Skip actual call if cancelled
+                                else:
+                                    response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=wav_data)
                                 
                                 # 4. NEW: Save Interaction
                                 # Remove technical tags before saving
@@ -303,7 +330,8 @@ def main():
                             else:
                                 hybrid_context = memory.get_hybrid_context("") 
                                 fallback_prompt = f"{hybrid_context}\n\n(Der User hat etwas gesagt, aber die Transkription war leer. Hör auf die Audio-Daten.)"
-                                response = llm.ask_gemini(leds, text_prompt=fallback_prompt, audio_data=wav_data)
+                                if not state.CANCEL_REQUESTED:
+                                    response = llm.ask_gemini(leds, text_prompt=fallback_prompt, audio_data=wav_data)
                                 
                         except Exception as e: 
                             print(f" [Main Loop Error] {e}")
@@ -317,7 +345,11 @@ def main():
                             print(" [Output] <SILENT>")
                             was_interrupted = False
                         else:
-                            was_interrupted = google.speak_text(leds, clean_resp, interrupt_check=check_for_interruption)
+                            if state.CANCEL_REQUESTED:
+                                print(" [System] Cancelled before TTS.")
+                                was_interrupted = False
+                            else:
+                                was_interrupted = google.speak_text(leds, clean_resp, interrupt_check=check_for_interruption)
 
                         ha.set_state("sensor.jarvis_last_response", clean_resp)
 
@@ -328,6 +360,7 @@ def main():
                              # Wenn unterbrochen wurde, verhalten wir uns wie bei einem Wake-Word
                              sfx.play(config.SOUND_WAKE)
                              lower_volume()
+                             state.IS_PROCESSING = False
                              state.open_session(8)
                              # Wir springen direkt zum Anfang der Schleife, session ist ja noch aktiv
                              continue
@@ -340,8 +373,11 @@ def main():
                         else:
                             state.SESSION_OPEN_UNTIL = 0
                             leds.update(Leds.rgb_off())
+                        
+                        state.IS_PROCESSING = False
                     else:
                         restore_volume(); state.SESSION_OPEN_UNTIL = 0; leds.update(Leds.rgb_off())
+                        state.IS_PROCESSING = False
                     continue
 
                 # --- WAKE WORD ---
