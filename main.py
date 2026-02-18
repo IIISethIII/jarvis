@@ -127,6 +127,11 @@ def main():
     except Exception as e:
         print(f"Init Error: {e}"); return
 
+    # Init Wakeup State
+    state.LAST_WAKEUP_DATE = datetime.datetime.now().date()
+    # Default: Erste Ausführung geplant in 3h
+    state.NEXT_WAKEUP = time.time() + (3 * 60 * 60)
+
     with Board() as board, Leds() as leds:
         ctx, lookup = ha.fetch_ha_context()
         state.HA_CONTEXT = ctx
@@ -198,6 +203,42 @@ def main():
         
         try:
             while True:
+                # --- AUTONOMOUS WAKEUP CHECK ---
+                now_ts = time.time()
+                now_dt = datetime.datetime.now()
+                
+                # A) Daily Reset
+                if now_dt.date() > state.LAST_WAKEUP_DATE:
+                    print(f" [System] 🌅 Neuer Tag! Reset Wakeup Count (Gestern: {state.WAKEUP_COUNT})")
+                    state.WAKEUP_COUNT = 0
+                    state.LAST_WAKEUP_DATE = now_dt.date()
+                
+                # B) Check Wakeup Time
+                if now_ts >= state.NEXT_WAKEUP:
+                    if state.WAKEUP_COUNT < 10:
+                        print(f"\n--> ⏰ AUTONOMOUS WAKEUP (Reason: {state.WAKEUP_REASON})")
+                        state.WAKEUP_COUNT += 1
+                        
+                        # Trigger Processing
+                        state.IS_PROCESSING = True
+                        lower_volume()
+                        
+                        # Special Logic: Direkt in die LLM Pipeline springen ohne Audio
+                        # Wir simulieren "Text Input" aber markieren es als intern
+                        incoming_text = f"INTERNAL_WAKEUP_TRIGGER: {state.WAKEUP_REASON}"
+                        
+                        # Setze nächsten Default-Wakeup (Fallback)
+                        state.NEXT_WAKEUP = now_ts + (3 * 60 * 60) # +3h
+                        state.WAKEUP_REASON = "Routine Check"
+                    else:
+                        # Limit reached
+                        if state.NEXT_WAKEUP < now_ts + 3600: # Nur einmal loggen wenn wir drüber rutschen
+                            print(" [System] 💤 Daily Wakeup Limit reached. Sleep until morning.")
+                            # Schlaf bis morgen 08:00
+                            tomorrow_8am = datetime.datetime.combine(now_dt.date() + datetime.timedelta(days=1), datetime.time(8, 0))
+                            state.NEXT_WAKEUP = tomorrow_8am.timestamp()
+                            state.WAKEUP_REASON = "Morning Start"
+
                 # 1. AUDIO LESEN (WATCHDOG)
                 try:
                     # Prüfe ob Daten da sind
@@ -226,12 +267,20 @@ def main():
                 if time.time() - last_mailbox_check > 1.5:
                     last_mailbox_check = time.time()
                     try:
-                        incoming_text = ha.get_input_text_state("input_text.jarvis_chat")
-                        if incoming_text and len(incoming_text) > 1:
+                        # Check Input Text (Home Assistant)
+                        ha_text = ha.get_input_text_state("input_text.jarvis_chat")
+                        if ha_text and len(ha_text) > 1:
+                            incoming_text = ha_text
                             ha.clear_input_text("input_text.jarvis_chat")
                             print(f"\n--> 📩 Remote: {incoming_text}")
                             leds.update(Leds.rgb_on(Color.CYAN))
-                            flush_queue(audio_queue) # Clear mic buffer so we don't record noise immediately
+                            flush_queue(audio_queue) 
+                        
+                        # Check "Internal Wakeup" (wird oben gesetzt)
+                        elif incoming_text and "INTERNAL_WAKEUP_TRIGGER" in incoming_text:
+                            leds.update(Leds.rgb_on(Color.MAGENTA)) # Indikator für Auto-Wakeup
+                            flush_queue(audio_queue)
+
                     except: pass
 
                 # 2. VAD & Wake Word Logic (OR Text)

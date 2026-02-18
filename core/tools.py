@@ -252,6 +252,18 @@ FUNCTION_DECLARATIONS = [
             "required": ["type"]
         }
     },
+    {
+        "name": "schedule_wakeup",
+        "description": "Erlaubt es Jarvis, selbst zu entscheiden, wann er wieder aufwachen soll. Nutze dies, wenn du später noch etwas erledigen musst oder proaktiv sein willst.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "minutes": { "type": "INTEGER", "description": "In wie vielen Minuten soll Jarvis aufwachen?" },
+                "reason": { "type": "STRING", "description": "Grund für den Wakeup (als Notiz an dich selbst)." }
+            },
+            "required": ["minutes", "reason"]
+        }
+    },
 ]
 
 # 2. Implementation Map
@@ -274,6 +286,7 @@ TOOL_IMPLEMENTATIONS = {
     'send_to_phone': ha.send_notification,
     'plan_outdoor_route': navigation.handle_route_planning,
     'get_weather_forecast': ha.get_weather_forecast,
+    'schedule_wakeup': timer.schedule_wakeup,
 }
 
 def execute_tool(name, args):
