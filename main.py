@@ -223,7 +223,7 @@ def main():
                         
                         # Trigger Processing
                         state.IS_PROCESSING = True
-                        lower_volume()
+                        # lower_volume() - Removed for silent wakeup to prevent dipping
                         
                         # Special Logic: Direkt in die LLM Pipeline springen ohne Audio
                         # Wir simulieren "Text Input" aber markieren es als intern
@@ -292,7 +292,7 @@ def main():
                             incoming_text = ha_text
                             ha.clear_input_text("input_text.jarvis_chat")
                             print(f"\n--> 📩 Remote: {incoming_text}")
-                            leds.update(Leds.rgb_on(Color.CYAN))
+                            # leds.update(Leds.rgb_on(Color.CYAN)) - SILENT
                             flush_queue(audio_queue) 
                         
                         # Check "Internal Wakeup" (wird oben gesetzt)
@@ -312,7 +312,7 @@ def main():
                                 except Exception as e:
                                     print(f" [Auto-Wakeup Error] {e}")
 
-                            leds.update(Leds.rgb_on(Color.MAGENTA)) # Indikator für Auto-Wakeup
+                            # leds.update(Leds.rgb_on(Color.MAGENTA)) - SILENT
                             flush_queue(audio_queue)
 
                     except: pass
@@ -323,7 +323,8 @@ def main():
 
                     threading.Thread(target=update_ha_context_bg, daemon=True).start()
 
-                    lower_volume()
+                    if not incoming_text:
+                        lower_volume()
                     user_text = None
                     wav_data = None
 
@@ -380,9 +381,12 @@ def main():
 
                     if is_speaking:
                         restore_volume()
-                        sfx.play_loop(config.SOUND_THINKING)
-                        leds.pattern = Pattern.breathe(1000)
-                        leds.update(Leds.rgb_pattern(config.DIM_BLUE))
+                        
+                        # Only play SFX/LEDs if it was a VOICE trigger
+                        if not incoming_text:
+                            sfx.play_loop(config.SOUND_THINKING)
+                            leds.pattern = Pattern.breathe(1000)
+                            leds.update(Leds.rgb_pattern(config.DIM_BLUE))
                         
                         response = "Fehler."
                         try:
