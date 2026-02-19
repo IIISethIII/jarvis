@@ -14,7 +14,7 @@ from aiy.board import Board
 from aiy.leds import Leds, Color, Pattern
 
 from jarvis import config, state
-from jarvis.services import system, timer, ha, google, sfx, memory
+from jarvis.services import system, timer, ha, google, sfx, memory, routine
 from jarvis.core import llm
 
 # --- WORKER PROCESS: Liest Audio isoliert ---
@@ -190,6 +190,7 @@ def main():
         
         last_log_time = time.time()
         last_mailbox_check = time.time()
+        last_routine_check = time.time()
 
         mic_fail_count = 0
 
@@ -229,8 +230,16 @@ def main():
                         incoming_text = f"INTERNAL_WAKEUP_TRIGGER: {state.WAKEUP_REASON}"
                         
                         # Setze nächsten Default-Wakeup (Fallback)
-                        state.NEXT_WAKEUP = now_ts + (3 * 60 * 60) # +3h
-                        state.WAKEUP_REASON = "Routine Check"
+                        # 1. Try to route via Habit Prediction
+                        pred_ts, pred_reason = routine.tracker.get_predicted_wakeup()
+                        if pred_ts and pred_ts > now_ts:
+                            state.NEXT_WAKEUP = pred_ts
+                            state.WAKEUP_REASON = pred_reason
+                            print(f" [System] 📅 Planned next wakeup: {datetime.datetime.fromtimestamp(pred_ts).strftime('%H:%M')} ({pred_reason})")
+                        else:
+                            # 2. Fallback: Default +3h
+                            state.NEXT_WAKEUP = now_ts + (3 * 60 * 60)
+                            state.WAKEUP_REASON = "Routine Check"
                     else:
                         # Limit reached
                         if state.NEXT_WAKEUP < now_ts + 3600: # Nur einmal loggen wenn wir drüber rutschen
@@ -239,6 +248,11 @@ def main():
                             tomorrow_8am = datetime.datetime.combine(now_dt.date() + datetime.timedelta(days=1), datetime.time(8, 0))
                             state.NEXT_WAKEUP = tomorrow_8am.timestamp()
                             state.WAKEUP_REASON = "Morning Start"
+
+                # C) Routine Background Check (every 60s)
+                if time.time() - last_routine_check > 60:
+                    last_routine_check = time.time()
+                    threading.Thread(target=routine.check_background_routine, daemon=True).start()
 
                 # 1. AUDIO LESEN (WATCHDOG)
                 # Nur lesen, wenn wir nicht schon einen internen Trigger haben

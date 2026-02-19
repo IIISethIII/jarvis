@@ -8,6 +8,7 @@ from jarvis.core.tools import FUNCTION_DECLARATIONS, execute_tool
 from aiy.leds import Pattern, Leds, Color
 from jarvis import state
 import jarvis.services.ha as ha
+import jarvis.services.routine as routine
 
 # WICHTIG: Kein 'f' vor dem String! Und {time_str} statt {date_str} nutzen.
 SYSTEM_PROMPT_TEMPLATE = """
@@ -23,6 +24,7 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Zeit aktuell: {time_str}
     - Verfügbare Smart-Home Geräte: {devices}
     - Standort: {people_locations}
+    - RITUAL & GEWOHNHEITEN: {habits_summary}
     - WAKEUP STATUS: {wakeup_status} (Count: {wakeup_count}/10)
     - PLANNED WAKEUP: {planned_wakeup}
 
@@ -287,6 +289,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
                     time_str=now_str,
                     people_locations=people_locs,
                     devices=device_list_str,
+                    habits_summary=routine.tracker.get_habits_summary(),
                     wakeup_status=state.WAKEUP_REASON + (" (AUTONOM)" if state.WAKEUP_REASON != "Initial Start" else ""),
                     wakeup_count=state.WAKEUP_COUNT,
                     planned_wakeup=f"{datetime.datetime.fromtimestamp(state.NEXT_WAKEUP).strftime('%H:%M')} Uhr ({state.WAKEUP_REASON})" if state.NEXT_WAKEUP else "Nicht geplant"
