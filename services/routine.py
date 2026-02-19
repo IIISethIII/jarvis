@@ -4,6 +4,7 @@ import time
 import datetime
 from jarvis import config, state as global_state
 from jarvis.utils import session
+import math
 
 ROUTINE_LOG_FILE = os.path.join(config.BASE_DIR, "data", "daily_routine.log")
 HABITS_FILE = os.path.join(config.BASE_DIR, "data", "habits.json")
@@ -18,6 +19,101 @@ class RoutineTracker:
         self.ignored_entities = ["sensor.time", "sensor.date"] 
         self.monitored_domains = ["person", "lock", "cover"] # Key domains we care about for habits
         self.monitored_patterns = ["computer", "pc", "tv", "bed", "sleep"] # Keywords in entity_id
+        
+        # Location Stuff
+        self.last_location = {} # entity_id -> (lat, lon, timestamp)
+        self.current_stop = {}  # entity_id -> (lat, lon, start_time)
+        self.MIN_STOP_DURATION = 15 * 60 # 15 Minutes to count as "Visit"
+        self.MOVE_THRESHOLD = 0.100      # 100 meters (approx)
+
+    def should_track_location(self, entity_id, attributes):
+        if not entity_id.startswith("person."): return False
+        if "latitude" not in attributes or "longitude" not in attributes: return False
+        return True
+
+    def get_dist(self, lat1, lon1, lat2, lon2):
+        # Haversine approx (km)
+        R = 6371
+        dlat = math.radians(lat2 - lat1)
+        dlon = math.radians(lon2 - lon1)
+        a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+        return R * c
+
+    def track_location(self, entity_id, attributes, friendly_name):
+        try:
+            lat = float(attributes['latitude'])
+            lon = float(attributes['longitude'])
+            now_ts = time.time()
+            
+            # 1. Update Movement Check
+            if entity_id not in self.last_location:
+                 self.last_location[entity_id] = (lat, lon, now_ts)
+                 return
+
+            last_lat, last_lon, last_ts = self.last_location[entity_id]
+            dist = self.get_dist(last_lat, last_lon, lat, lon) # in km
+            
+            # A) MOVEMENT DETECTED (> 100m)
+            if dist > self.MOVE_THRESHOLD:
+                # If we were in a stop, close it
+                if entity_id in self.current_stop:
+                    start_lat, start_lon, start_time = self.current_stop[entity_id]
+                    duration = (now_ts - start_time) / 60 # mins
+                    
+                    if duration >= 15: # Only log real stops
+                        self.log_stop(entity_id, friendly_name, start_lat, start_lon, start_time, now_ts)
+                    
+                    del self.current_stop[entity_id]
+                
+                # Update last known pos
+                self.last_location[entity_id] = (lat, lon, now_ts)
+
+            # B) NO MOVEMENT (Stationary)
+            else:
+                # If not in a stop, start one
+                if entity_id not in self.current_stop:
+                    # We start counting from when we *first* saw this loc (last_ts)
+                    self.current_stop[entity_id] = (last_lat, last_lon, last_ts)
+                
+                # We don't update last_location timestamp here, so dist stays low relative to anchor
+                # Wait.. actually we should keep the anchor as the 'stop center' logic. 
+                # Current 'last_location' acts as anchor. Correct.
+                pass
+                
+        except Exception as e:
+            print(f"LocTrack Error: {e}")
+
+    def log_stop(self, entity_id, name, lat, lon, start_ts, end_ts):
+        duration_min = int((end_ts - start_ts) / 60)
+        t_str = datetime.datetime.fromtimestamp(start_ts).strftime("%H:%M")
+        
+        # Log entry
+        entry = {
+            "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "entity_id": entity_id,
+            "name": name,
+            "state": f"Stopped at {lat:.4f}, {lon:.4f} for {duration_min} min",
+            "lat": lat, 
+            "lon": lon,
+            "weekday": datetime.datetime.now().strftime("%A")
+        }
+        with open(ROUTINE_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        print(f" [Routine] 📍 Stop Detected: {name} @ {lat:.4f},{lon:.4f} ({duration_min} min)")
+
+    def reverse_geocode(self, lat, lon):
+        try:
+            # Free OSM Nominatim (Please respect Usage Policy: User-Agent required)
+            url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lon}&zoom=18&addressdetails=1"
+            headers = {"User-Agent": "JarvisAI_Personal_Assistant"} 
+            r = session.get(url, headers=headers, timeout=2)
+            if r.status_code == 200:
+                data = r.json()
+                # Try to get a specific name first, fallback to the full address string, then default
+                return data.get('name') or data.get('display_name') or "Unbekannter Ort"
+        except: pass
+        return None
 
     def should_track(self, entity_id):
         domain = entity_id.split(".")[0]
@@ -68,6 +164,27 @@ class RoutineTracker:
         
         # Limit to last ~500 events to fit in context
         recent_logs = "".join(lines[-500:])
+        
+        # --- PRE-PROCESS LOCATIONS ---
+        # Find raw coordinates in logs and resolve them
+        import re
+        # Pattern: Stopped at 48.1234, 11.5678
+        coords = re.findall(r"Stopped at (\d+\.\d+), (\d+\.\d+)", recent_logs)
+        
+        # De-duplicate to save API calls
+        unique_coords = set(coords)
+        
+        resolved_map = {}
+        for lat_str, lon_str in unique_coords:
+            # Only resolve if it appears often enough? For now just resolve all unique stops.
+            place_name = self.reverse_geocode(float(lat_str), float(lon_str))
+            if place_name:
+                resolved_map[f"{lat_str}, {lon_str}"] = place_name
+                time.sleep(1.0) # Respect OSM API limit
+        
+        # Replace in logs
+        for coord_str, name in resolved_map.items():
+            recent_logs = recent_logs.replace(coord_str, f"'{name}' ({coord_str})")
         
         current_habits = "{}"
         if os.path.exists(HABITS_FILE):
@@ -200,6 +317,11 @@ def check_background_routine():
         ctx, _ = ha.fetch_ha_context()
         for device in ctx:
             tracker.log_event(device['entity_id'], device['state'], device['name'])
+            
+            # Check Location
+            if tracker.should_track_location(device['entity_id'], device.get('attributes', {})):
+                tracker.track_location(device['entity_id'], device['attributes'], device['name'])
+                
     except Exception as e:
         print(f" [Routine] Background check failed: {e}")
 
