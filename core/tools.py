@@ -283,6 +283,17 @@ FUNCTION_DECLARATIONS = [
             "required": ["entity_id", "summary", "target_value"]
         }
     },
+    {
+        "name": "delete_wakeup_automation",
+        "description": "Löscht eine Wakeup-Automation. Nutze dies, wenn die Automation ihren Zweck erfüllt hat, damit sie nicht immer wieder feuert.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "auto_id": { "type": "STRING", "description": "Die ID der Automation (wird dir beim Wakeup mitgeteilt)." }
+            },
+            "required": ["auto_id"]
+        }
+    },
 ]
 
 # 2. Implementation Map
@@ -307,6 +318,7 @@ TOOL_IMPLEMENTATIONS = {
     'get_weather_forecast': ha.get_weather_forecast,
     'schedule_wakeup': system.schedule_wakeup,
     'schedule_conditional_wakeup': ha.create_ha_automation,
+    'delete_wakeup_automation': ha.delete_ha_automation,
 }
 
 def execute_tool(name, args):
