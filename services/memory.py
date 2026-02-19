@@ -4,6 +4,7 @@ import time
 import numpy as np
 from jarvis import config
 from jarvis.utils import session
+from jarvis.services import routine
 
 # --- EMBEDDING HELPER ---
 EMBEDDING_MODEL = "models/text-embedding-004"
@@ -165,6 +166,10 @@ def dream():
                 f.write("")
                 
             print(" [Memory] ✨ Dream complete. Core updated.")
+
+            # 3. Analyze Daily Routine
+            print(" [Memory] 🕵️ Analyzing Daily Routine...")
+            routine.tracker.analyze_routine()
         else:
             print(f" [Memory] Dream failed: {resp.text}")
             
