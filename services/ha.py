@@ -70,6 +70,49 @@ def fetch_ha_context():
     
     return [], {}
 
+def get_ha_history(entity_ids, start_time, end_time=None, minimal_response=False):
+    """
+    Fetches history for specific entities.
+    start_time: datetime object or ISO string.
+    end_time: datetime object or ISO string (optional).
+    minimal_response: If True, returns only state/last_changed (no attributes).
+    """
+    if not entity_ids: return []
+    
+    # Format start_time
+    if isinstance(start_time, datetime.datetime):
+        start_ts = start_time.isoformat()
+    else:
+        start_ts = start_time
+        
+    url = f"{HA_URL}/api/history/period/{start_ts}"
+    
+    params = {
+        "filter_entity_id": ",".join(entity_ids),
+        "minimal_response": "true" if minimal_response else "false",
+        "no_attributes": "false" if not minimal_response else "true"
+    }
+    
+    if end_time:
+        if isinstance(end_time, datetime.datetime):
+            params["end_time"] = end_time.isoformat()
+        else:
+            params["end_time"] = end_time
+            
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    
+    try:
+        response = session.get(url, headers=headers, params=params, timeout=60)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"[HA History Error] {response.status_code}: {response.text}")
+            return []
+    except Exception as e:
+        print(f"[HA History Exception] {e}")
+        return []
+
 def fetch_ha_entities():
     _, lookup = fetch_ha_context()
     return lookup
