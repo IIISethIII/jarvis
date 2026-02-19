@@ -258,10 +258,29 @@ FUNCTION_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "minutes": { "type": "INTEGER", "description": "In wie vielen Minuten soll Jarvis aufwachen?" },
+                "minutes": { "type": "INTEGER", "description": "Dauer in Minuten bis zum Wakeup." },
                 "reason": { "type": "STRING", "description": "Grund für den Wakeup (als Notiz an dich selbst)." }
             },
             "required": ["minutes", "reason"]
+        }
+    },
+    {
+        "name": "schedule_conditional_wakeup",
+        "description": "Erlaubt es Jarvis, aufzuwachen, wenn ein HomeAssistant-Gerät einen bestimmten Zustand hat oder eine Bedingung erfüllt ist (z.B. 'Wenn ich nach Hause komme', 'Wenn das Licht ausgeht'). Erstellt eine native HomeAssistant Automation.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "entity_id": { "type": "STRING", "description": "Die HomeAssistant Entity ID (z.B. person.paul, light.kitchen)." },
+                "summary": { "type": "STRING", "description": "Grund für den Wakeup." },
+                "target_value": { "type": "STRING", "description": "Der Zielwert (on/off/home/not_home) oder 'lat,lon,radius' bei Geo-Conditions." },
+                "condition_type": { 
+                    "type": "STRING", 
+                    "enum": ["state_match", "numeric", "geolocation"],
+                    "description": "Art der Bedingung. Default ist 'state_match'."
+                },
+                "operator": { "type": "STRING", "enum": [">", "<", "==", ">=", "<="], "description": "Nur für 'numeric' Conditions." }
+            },
+            "required": ["entity_id", "summary", "target_value"]
         }
     },
 ]
@@ -286,7 +305,8 @@ TOOL_IMPLEMENTATIONS = {
     'send_to_phone': ha.send_notification,
     'plan_outdoor_route': navigation.handle_route_planning,
     'get_weather_forecast': ha.get_weather_forecast,
-    'schedule_wakeup': timer.schedule_wakeup,
+    'schedule_wakeup': system.schedule_wakeup,
+    'schedule_conditional_wakeup': ha.create_ha_automation,
 }
 
 def execute_tool(name, args):

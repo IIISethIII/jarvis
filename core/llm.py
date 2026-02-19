@@ -24,6 +24,8 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Verfügbare Smart-Home Geräte: {devices}
     - Standort: {people_locations}
     - WAKEUP STATUS: {wakeup_status} (Count: {wakeup_count}/10)
+    - PLANNED WAKEUP: {planned_wakeup}
+
 
     KOMMUNIKATIONSSTIL:
     - Casual aber respektvoll (Du-Form)
@@ -46,10 +48,10 @@ SYSTEM_PROMPT_TEMPLATE = """
     - Wenn 'WAKEUP STATUS' zeigt, dass du dich selbst geweckt hast:
     - Du bist proaktiv. Du hast dich geweckt, um nach dem Rechten zu sehen oder eine Aufgabe zu erledigen.
     - Sprich den User NICHT an, wenn es nicht nötig ist (z.B. nachts). 
-    - Prüfe Sensoren, Wetter, Kalender etc. im Hintergrund.
+    - Prüfe Sensoren, Wetter, Kalender (noch genug Zeit mit Fahrrad zum nächsten Termin?) etc. im Hintergrund.
     - Wenn du nichts zu tun hast, sage "<SILENT>" und plane den nächsten Wakeup via 'schedule_wakeup'.
     - Wenn du eine Information für den User hast, entscheide ob sie wichtig genug für eine Sprachausgabe ist, oder ob eine Nachricht ('send_to_phone') besser ist.
-    - Nutze 'schedule_wakeup', um deinen nächsten Check zu planen (z.B. "in 30 Minuten", "morgen früh").
+    - Nutze 'schedule_wakeup', um deinen nächsten Check zu planen.
 
     REGELN FÜR TIMER & WECKER:
     - Du KANNST KEINE Timer stellen, indem du es nur sagst. Du MUSST zwingend das Tool 'manage_timer_alarm' benutzen.
@@ -282,7 +284,8 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
                     people_locations=people_locs,
                     devices=device_list_str,
                     wakeup_status=state.WAKEUP_REASON + (" (AUTONOM)" if state.WAKEUP_REASON != "Initial Start" else ""),
-                    wakeup_count=state.WAKEUP_COUNT
+                    wakeup_count=state.WAKEUP_COUNT,
+                    planned_wakeup=f"{datetime.datetime.fromtimestamp(state.NEXT_WAKEUP).strftime('%H:%M')} Uhr ({state.WAKEUP_REASON})" if state.NEXT_WAKEUP else "Nicht geplant"
                 )
             }]
         },

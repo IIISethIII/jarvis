@@ -69,20 +69,3 @@ def background_timer_check():
         except Exception as e: print(f"[Timer Error] {e}")
         except Exception as e: print(f"[Timer Error] {e}")
         time.sleep(1)
-
-def schedule_wakeup(minutes, reason="Routine Check"):
-    """
-    Plant einen autonomen Wakeup.
-    """
-    try:
-        minutes = int(minutes)
-        if minutes < 1: return "Minuten müssen >= 1 sein."
-        
-        target_time = time.time() + (minutes * 60)
-        state.NEXT_WAKEUP = target_time
-        state.WAKEUP_REASON = reason
-        
-        dt = datetime.datetime.fromtimestamp(target_time)
-        return f"Ich werde um {dt.strftime('%H:%M')} Uhr wieder aufwachen. Grund: {reason}"
-    except Exception as e:
-        return f"Fehler beim Planen: {e}"
