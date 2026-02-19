@@ -408,7 +408,7 @@ def main():
                                 if state.CANCEL_REQUESTED: 
                                     response = "<SILENT>" # Skip actual call if cancelled
                                 else:
-                                    response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=wav_data)
+                                    response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=wav_data, silent_mode=(incoming_text is not None))
                                 
                                 # 4. NEW: Save Interaction
                                 # Remove technical tags before saving
@@ -418,7 +418,7 @@ def main():
                                 hybrid_context = memory.get_hybrid_context("") 
                                 fallback_prompt = f"{hybrid_context}\n\n(Der User hat etwas gesagt, aber die Transkription war leer. Hör auf die Audio-Daten.)"
                                 if not state.CANCEL_REQUESTED:
-                                    response = llm.ask_gemini(leds, text_prompt=fallback_prompt, audio_data=wav_data)
+                                    response = llm.ask_gemini(leds, text_prompt=fallback_prompt, audio_data=wav_data, silent_mode=(incoming_text is not None))
                                 
                         except Exception as e: 
                             print(f" [Main Loop Error] {e}")

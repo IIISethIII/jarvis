@@ -253,7 +253,7 @@ class RoutineTracker:
         """
         Returns the next timestamp where we expect user activity based on habits.
         """
-        if not os.path.exists(HABITS_FILE): return None
+        if not os.path.exists(HABITS_FILE): return None, None
         
         try:
             with open(HABITS_FILE, "r", encoding="utf-8") as f:
