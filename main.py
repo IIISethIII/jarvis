@@ -203,6 +203,7 @@ def main():
         
         try:
             while True:
+                incoming_text = None
                 # --- AUTONOMOUS WAKEUP CHECK ---
                 now_ts = time.time()
                 now_dt = datetime.datetime.now()
@@ -240,30 +241,34 @@ def main():
                             state.WAKEUP_REASON = "Morning Start"
 
                 # 1. AUDIO LESEN (WATCHDOG)
-                try:
-                    # Prüfe ob Daten da sind
-                    pcm = audio_queue.get(timeout=3)
-                    mic_fail_count = 0
-                except queue.Empty:
-                    mic_fail_count += 1
-                    print(f" [Watchdog] Mic tot! ({mic_fail_count}/5) Starte Treiber neu...")
-                    
-                    # Wenn zu viele Versuche scheitern, den gesamten Dienst neustarten
-                    if mic_fail_count >= 5:
-                        print(" [System] Kritischer Audio-Fehler. Starte Service neu...")
-                        system.restart_service()
-                        break # Loop verlassen, damit der Prozess endet
-                    
-                    if audio_proc.is_alive():
-                        audio_proc.terminate()
-                        audio_proc.join(timeout=0.1)
-                    
-                    audio_proc = start_audio_process()
-                    time.sleep(3.0) 
-                    continue
+                # Nur lesen, wenn wir nicht schon einen internen Trigger haben
+                if not incoming_text:
+                    try:
+                        # Prüfe ob Daten da sind
+                        pcm = audio_queue.get(timeout=3)
+                        mic_fail_count = 0
+                    except queue.Empty:
+                        mic_fail_count += 1
+                        print(f" [Watchdog] Mic tot! ({mic_fail_count}/5) Starte Treiber neu...")
+                        
+                        # Wenn zu viele Versuche scheitern, den gesamten Dienst neustarten
+                        if mic_fail_count >= 5:
+                            print(" [System] Kritischer Audio-Fehler. Starte Service neu...")
+                            system.restart_service()
+                            break # Loop verlassen, damit der Prozess endet
+                        
+                        if audio_proc.is_alive():
+                            audio_proc.terminate()
+                            audio_proc.join(timeout=0.1)
+                        
+                        audio_proc = start_audio_process()
+                        time.sleep(3.0) 
+                        continue
+                else:
+                    # Fake PCM für den Fall dass wir durchfallen (sollte nicht passieren da wir verarbeiten)
+                    pcm = None
 
                 # MAILBOX CHECK
-                incoming_text = None
                 if time.time() - last_mailbox_check > 1.5:
                     last_mailbox_check = time.time()
                     try:
@@ -278,6 +283,21 @@ def main():
                         
                         # Check "Internal Wakeup" (wird oben gesetzt)
                         elif incoming_text and "INTERNAL_WAKEUP_TRIGGER" in incoming_text:
+                            # NEW: Self-Destruct Logic
+                            if "|" in incoming_text:
+                                try:
+                                    # Format: INTERNAL_WAKEUP_TRIGGER|auto_id|summary
+                                    parts = incoming_text.split("|")
+                                    if len(parts) >= 3:
+                                        auto_id = parts[1]
+                                        summary = parts[2]
+                                        print(f" [System] 💥 Self-Destructing Automation: {auto_id}")
+                                        ha.delete_ha_automation(auto_id)
+                                        # Clean text for LLM
+                                        incoming_text = f"INTERNAL_WAKEUP_TRIGGER: {summary}"
+                                except Exception as e:
+                                    print(f" [Auto-Delete Error] {e}")
+
                             leds.update(Leds.rgb_on(Color.MAGENTA)) # Indikator für Auto-Wakeup
                             flush_queue(audio_queue)
 

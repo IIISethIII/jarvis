@@ -449,7 +449,6 @@ def set_state(entity_id, state_value, attributes=None):
         if attributes:
             payload["attributes"] = attributes
             
-        # Assuming 'session' is your requests.Session() object defined in this file
         r = session.post(url, headers=headers, json=payload, timeout=2)
         
         if r.status_code not in [200, 201]:
@@ -457,3 +456,103 @@ def set_state(entity_id, state_value, attributes=None):
             
     except Exception as e:
         print(f" [HA Error] set_state failed: {e}")
+
+def create_ha_automation(entity_id, summary, target_value, condition_type="state_match", operator=None):
+    """
+    Creates a native Home Assistant automation via API.
+    """
+    import time
+    
+    # 1. Generate unique ID for the automation
+    auto_id = f"jarvis_wakeup_{int(time.time())}"
+    
+    # 2. Build Trigger
+    trigger = []
+    
+    if condition_type == "state_match":
+        trigger.append({
+            "platform": "state",
+            "entity_id": entity_id,
+            "to": target_value
+        })
+    elif condition_type == "numeric":
+        t = {
+            "platform": "numeric_state",
+            "entity_id": entity_id
+        }
+        # HA expects 'above' or 'below'
+        op = operator if operator else ">"
+        if ">" in op: t["above"] = float(target_value)
+        elif "<" in op: t["below"] = float(target_value)
+        trigger.append(t)
+    elif condition_type == "geolocation":
+        # Complex: If raw coords, we use a template trigger
+        # target_value expected: "lat,lon,radius"
+        try:
+            parts = target_value.split(',')
+            lat = float(parts[0])
+            lon = float(parts[1])
+            radius = float(parts[2])
+            
+            # Using Haversine formula in Jinja2 template is heavy, but standard for HA templates
+            # We assume the entity_id has latitude/longitude attributes (like person.x or device_tracker.y)
+            template = f"""
+            {{{{ distance(states.{entity_id}, {lat}, {lon}) * 1000 <= {radius} }}}}
+            """
+            trigger.append({
+                "platform": "template",
+                "value_template": template.strip()
+            })
+        except:
+            return "Fehler: Geolocation Format muss 'lat,lon,radius' sein."
+
+    # 3. Build Action (Write to Mailbox)
+    action = [
+        {
+            "service": "input_text.set_value",
+            "data": {
+                "entity_id": "input_text.jarvis_chat",
+                "value": f"INTERNAL_WAKEUP_TRIGGER|{auto_id}|{summary}"
+            }
+        },
+        # Optional: Self-destruct automation? HA API doesn't easily support "delete self" inside automation.
+        # We leave it active. User or Jarvis clean up later? 
+        # For now, we assume it's a one-off notification basically.
+    ]
+
+    payload = {
+        "alias": f"Jarvis: {summary}",
+        "description": "Created automatically by Jarvis AI.",
+        "trigger": trigger,
+        "action": action,
+        "mode": "single"
+    }
+
+    url = f"{HA_URL}/api/config/automation/config/{auto_id}"
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    
+    try:
+        r = session.post(url, headers=headers, json=payload, timeout=5)
+        if r.status_code in [200, 201]:
+            return f"Automation erstellt (ID: {auto_id}). Ich werde benachrichtigt, wenn '{summary}' eintritt."
+        else:
+            return f"Fehler beim Erstellen der Automation: {r.status_code} {r.text}"
+    except Exception as e:
+        return f"API Fehler: {e}"
+
+def delete_ha_automation(auto_id):
+    """
+    Deletes an automation via API.
+    """
+    if not auto_id: return "Keine ID."
+    
+    url = f"{HA_URL}/api/config/automation/config/{auto_id}"
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    
+    try:
+        r = session.delete(url, headers=headers, timeout=5)
+        if r.status_code == 200:
+            return f"Automation {auto_id} gelöscht."
+        return f"Fehler beim Löschen: {r.status_code}"
+    except Exception as e:
+        return f"Fehler: {e}"
