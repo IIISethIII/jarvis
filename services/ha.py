@@ -398,37 +398,87 @@ def clear_input_text(entity_id):
         session.post(f"{HA_URL}/api/services/input_text/set_value", headers=headers, json={"entity_id": entity_id, "value": ""}, timeout=2)
     except: pass
 
-def get_all_person_locations():
+def get_entity_address(entity_id, all_states=None):
     """
-    Fetches the status and coordinates of ALL 'person.*' entities.
-    Returns a string like:
-    - Paul: home (Lat: 48.123, Lon: 11.456)
-    - Anna: work (Lat: 48.987, Lon: 11.654)
+    Attempts to find a human-readable address for a given entity (usually a person).
+    Returns the address string or None.
     """
     headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    
+    # 1. Fetch states if not provided (cached)
+    if not all_states:
+        try:
+            r = session.get(f"{HA_URL}/api/states", headers=headers, timeout=3)
+            if r.status_code == 200:
+                all_states = {entity['entity_id']: entity for entity in r.json()}
+            else:
+                return None
+        except: return None
+        
+    entity = all_states.get(entity_id)
+    if not entity: return None
+    
+    # 2. Find source tracker
+    source_tracker = entity.get('attributes', {}).get('source')
+    if not source_tracker: return None
+    
+    # 3. Template Lookup
+    template = f"{{{{ device_entities(device_id('{source_tracker}')) | select('search', 'geocoded_location') | list | first }}}}"
     try:
-        # We fetch all states and filter python-side to save API calls
+        tmpl_r = session.post(
+            f"{HA_URL}/api/template", 
+            headers=headers, 
+            json={"template": template},
+            timeout=2
+        )
+        if tmpl_r.status_code == 200:
+            geocoded_sensor_id = tmpl_r.text.strip()
+            if geocoded_sensor_id and geocoded_sensor_id != "None" and geocoded_sensor_id in all_states:
+                address = all_states[geocoded_sensor_id]['state']
+                if address and address not in ["unknown", "unavailable"]:
+                    return address
+    except: pass
+    
+    return None
+
+def get_all_person_locations():
+    """
+    Fetches the status and address of ALL 'person.*' entities using geocoded location sensors.
+    Returns a string like:
+    - Paul: home (Address: Müllerstraße)
+    - Anna: work (Address: Hauptstraße)
+    """
+    headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
+    
+    try:
+        # 1. Fetch all states for fast lookup
         r = session.get(f"{HA_URL}/api/states", headers=headers, timeout=3)
-        if r.status_code == 200:
-            people = []
-            for entity in r.json():
-                eid = entity['entity_id']
-                if eid.startswith("person."):
-                    name = entity.get('attributes', {}).get('friendly_name', eid)
-                    state = entity['state']
-                    
-                    # Get GPS if available
-                    lat = entity.get('attributes', {}).get('latitude')
-                    lon = entity.get('attributes', {}).get('longitude')
-                    
-                    if lat and lon:
-                        geo_str = f"(GPS: {lat}, {lon})"
-                    else:
-                        geo_str = "(No GPS)"
-                        
-                    people.append(f"- {name}: {state} {geo_str}")
+        if r.status_code != 200:
+            return "Fehler beim Abrufen der States."
             
-            return "\n".join(people) if people else "Keine Personen gefunden."
+        all_states = {entity['entity_id']: entity for entity in r.json()}
+        people_output = []
+
+        # 2. Iterate through person entities
+        for eid, entity in all_states.items():
+            if eid.startswith("person."):
+                name = entity.get('attributes', {}).get('friendly_name', eid)
+                state = entity['state']
+                
+                # Default to GPS or Nothing
+                lat = entity.get('attributes', {}).get('latitude')
+                lon = entity.get('attributes', {}).get('longitude')
+                location_str = f"(GPS: {lat}, {lon})" if lat and lon else "(No Location Data)"
+
+                # 3. Try to get Address
+                address = get_entity_address(eid, all_states)
+                if address:
+                    location_str = f"(Address: {address})"
+
+                people_output.append(f"- {name}: {state} {location_str}")
+        
+        return "\n".join(people_output) if people_output else "Keine Personen gefunden."
+
     except Exception as e:
         print(f"[HA Error] Person Fetch: {e}")
         return "Fehler beim Abrufen der Standorte."

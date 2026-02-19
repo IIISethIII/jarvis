@@ -314,12 +314,39 @@ def perform_google_search_internal(query):
         if response.status_code == 200:
             result = response.json()
             try:
-                return result['candidates'][0]['content']['parts'][0]['text']
+                text = result['candidates'][0]['content']['parts'][0]['text']
+                # Remove model's "I found..." fluff if possible, but for now raw text is fine
+                return text
             except:
                 return "Ich konnte online keine Informationen finden."
         return f"Fehler bei der Suche: {response.status_code}"
     except Exception as e:
         return f"Verbindungsfehler: {e}"
+
+def resolve_location_name(address):
+    """
+    Uses Google Search via Gemini to find the POI name for an address.
+    """
+    if not address: return None
+    
+    prompt = f"""
+    What is located at {address}? 
+    
+    RULES:
+    1. Search for this address on Google.
+    2. If it is a known business or public place (e.g. 'Rewe', 'Shell', 'City Gym', 'McDonalds'), return ONLY that name.
+    3. If it looks like a private residential address or nothing specific is found, return 'Private Residence'.
+    4. Do not explain. Return ONLY the name.
+    """
+    
+    # We reuse the internal search logic but with a specific prompt
+    result = perform_google_search_internal(prompt)
+    
+    # Basic cleanup
+    if result:
+        clean = result.strip().strip('"').strip("'").split('\n')[0]
+        return clean
+    return None
     
 def perform_maps_search(query):
     """Führt eine Google Maps Suche mit explizitem Standort-Kontext aus."""
