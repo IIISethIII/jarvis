@@ -291,12 +291,12 @@ def main():
                                     if len(parts) >= 3:
                                         auto_id = parts[1]
                                         summary = parts[2]
-                                        print(f" [System] 💥 Self-Destructing Automation: {auto_id}")
-                                        ha.delete_ha_automation(auto_id)
-                                        # Clean text for LLM
-                                        incoming_text = f"INTERNAL_WAKEUP_TRIGGER: {summary}"
+                                        # OLD: ha.delete_ha_automation(auto_id) -> Jetzt manuell
+                                        
+                                        # Clean text for LLM, but include ID for deletion recommendation
+                                        incoming_text = f"INTERNAL_WAKEUP_TRIGGER: {summary} [Automation ID: {auto_id}]"
                                 except Exception as e:
-                                    print(f" [Auto-Delete Error] {e}")
+                                    print(f" [Auto-Wakeup Error] {e}")
 
                             leds.update(Leds.rgb_on(Color.MAGENTA)) # Indikator für Auto-Wakeup
                             flush_queue(audio_queue)
