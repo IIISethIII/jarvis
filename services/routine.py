@@ -88,6 +88,10 @@ class RoutineTracker:
         duration_min = int((end_ts - start_ts) / 60)
         t_str = datetime.datetime.fromtimestamp(start_ts).strftime("%H:%M")
         
+        # NEW: Try to get address
+        from jarvis.services import ha
+        address = ha.get_entity_address(entity_id)
+        
         # Log entry
         entry = {
             "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -96,11 +100,14 @@ class RoutineTracker:
             "state": f"Stopped at {lat:.4f}, {lon:.4f} for {duration_min} min",
             "lat": lat, 
             "lon": lon,
+            "address": address, # New Field
             "weekday": datetime.datetime.now().strftime("%A")
         }
         with open(ROUTINE_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry) + "\n")
-        print(f" [Routine] 📍 Stop Detected: {name} @ {lat:.4f},{lon:.4f} ({duration_min} min)")
+            
+        loc_info = f" ({address})" if address else ""
+        print(f" [Routine] 📍 Stop Detected: {name} @ {lat:.4f},{lon:.4f}{loc_info} ({duration_min} min)")
 
     def reverse_geocode(self, lat, lon):
         try:
@@ -163,28 +170,42 @@ class RoutineTracker:
         if len(lines) < 10: return # Not enough data
         
         # Limit to last ~500 events to fit in context
-        recent_logs = "".join(lines[-500:])
+        recent_lines = lines[-500:]
         
         # --- PRE-PROCESS LOCATIONS ---
-        # Find raw coordinates in logs and resolve them
-        import re
-        # Pattern: Stopped at 48.1234, 11.5678
-        coords = re.findall(r"Stopped at (\d+\.\d+), (\d+\.\d+)", recent_logs)
+        # 1. Parse JSON lines to find stops with addresses
+        # We rewrite the log buffer that goes to the LLM
+        processed_log_str = ""
         
-        # De-duplicate to save API calls
-        unique_coords = set(coords)
+        from jarvis.services import google
         
-        resolved_map = {}
-        for lat_str, lon_str in unique_coords:
-            # Only resolve if it appears often enough? For now just resolve all unique stops.
-            place_name = self.reverse_geocode(float(lat_str), float(lon_str))
-            if place_name:
-                resolved_map[f"{lat_str}, {lon_str}"] = place_name
-                time.sleep(1.0) # Respect OSM API limit
+        for line in recent_lines:
+            try:
+                entry = json.loads(line)
+                # Check if it's a stop
+                if "Stopped at" in entry.get("state", ""):
+                    lat = entry.get("lat")
+                    lon = entry.get("lon")
+                    address = entry.get("address")
+                    
+                    # Resolve Name
+                    place_name = None
+                    if address:
+                        place_name = google.resolve_location_name(address)
+                        time.sleep(1) # Rate limit
+                    elif lat and lon:
+                        place_name = self.reverse_geocode(lat, lon)
+                        time.sleep(1)
+                    
+                    if place_name:
+                        # Replace vague coords/address with POI Name
+                        entry["state"] = f"Visited '{place_name}' ({entry['state']})"
+                
+                # Re-serialize for LLM
+                processed_log_str += json.dumps(entry) + "\n"
+            except:
+                processed_log_str += line # Fallback to raw line
         
-        # Replace in logs
-        for coord_str, name in resolved_map.items():
-            recent_logs = recent_logs.replace(coord_str, f"'{name}' ({coord_str})")
         
         current_habits = "{}"
         if os.path.exists(HABITS_FILE):
@@ -198,7 +219,7 @@ class RoutineTracker:
         {current_habits}
         
         NEW EVENT LOGS:
-        {recent_logs}
+        {processed_log_str}
         
         TASK:
         1. Identify consistent patterns (e.g., "Always leaves for work around 08:00 on Weekdays", "Goes to bed around 23:00").
