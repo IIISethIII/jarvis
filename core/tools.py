@@ -321,13 +321,13 @@ TOOL_IMPLEMENTATIONS = {
     'delete_wakeup_automation': ha.delete_ha_automation,
 }
 
-def execute_tool(name, args):
+def execute_tool(name, args, silent_mode=False):
     """Dispatches the function call to the correct service."""
     print(f"  [DEBUG] Tool Call: {name} | Args: {args}")
     if name in TOOL_IMPLEMENTATIONS:
         try:
             result = TOOL_IMPLEMENTATIONS[name](**args)
-            if not name.startswith("get_") and name != "perform_google_search":
+            if not silent_mode and not name.startswith("get_") and name != "perform_google_search":
                 sfx.play(config.SOUND_SUCCESS)
             print(f"  [DEBUG] Tool Result: {result}")
             return result

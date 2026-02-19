@@ -221,10 +221,11 @@ def trim_history():
     from collections import deque
     CONVERSATION_HISTORY = deque(final_history)
 
-def ask_gemini(leds, text_prompt=None, audio_data=None):
+def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
     from jarvis.config import DIM_BLUE 
-    leds.pattern = Pattern.breathe(2000)
-    leds.update(Leds.rgb_pattern(DIM_BLUE))
+    if not silent_mode:
+        leds.pattern = Pattern.breathe(2000)
+        leds.update(Leds.rgb_pattern(DIM_BLUE))
     
     trim_history()
 
@@ -374,7 +375,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None):
                 for call in function_calls:
                     fn = call['functionCall']
                     try:
-                        res = execute_tool(fn['name'], fn.get('args', {}))
+                        res = execute_tool(fn['name'], fn.get('args', {}), silent_mode=silent_mode)
                     except Exception as tool_err:
                         res = f"Error: {tool_err}"
                     tool_responses.append({
