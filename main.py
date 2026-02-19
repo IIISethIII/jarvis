@@ -438,7 +438,7 @@ def main():
                             else:
                                 was_interrupted = google.speak_text(leds, clean_resp, interrupt_check=check_for_interruption)
 
-                        ha.set_state("sensor.jarvis_last_response", clean_resp)
+                        ha.set_state("sensor.jarvis_last_response", clean_resp[:250], attributes={"full_text": clean_resp})
 
                         # WICHTIG: Queue leeren, damit wir nicht Jarvis eigenes Echo hören
                         flush_queue(audio_queue)
