@@ -294,6 +294,24 @@ FUNCTION_DECLARATIONS = [
             "required": ["auto_id"]
         }
     },
+    {
+        "name": "get_ha_history",
+        "description": "Ruft historische Daten (Verlauf) für Home Assistant Entitäten ab. Nutze dies, um herauszufinden, wann etwas passiert ist oder wie der Verlauf war.",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "entity_ids": { 
+                    "type": "ARRAY", 
+                    "items": { "type": "STRING" }, 
+                    "description": "Die Entitäts-IDs, als Array z.B. ['person.paul', 'light.wohnzimmer']." 
+                },
+                "start_time": { "type": "STRING", "description": "Startzeitpunkt im ISO-Format (z.B. '2023-10-01T12:00:00')." },
+                "end_time": { "type": "STRING", "description": "Endzeitpunkt im ISO-Format (optional)." },
+                "minimal_response": { "type": "BOOLEAN", "description": "True für kompakte Antwort ohne lange JSON Attribute (empfohlen)." }
+            },
+            "required": ["entity_ids", "start_time"]
+        }
+    },
 ]
 
 # 2. Implementation Map
@@ -319,6 +337,7 @@ TOOL_IMPLEMENTATIONS = {
     'schedule_wakeup': system.schedule_wakeup,
     'schedule_conditional_wakeup': ha.create_ha_automation,
     'delete_wakeup_automation': ha.delete_ha_automation,
+    'get_ha_history': ha.get_ha_history,
 }
 
 def execute_tool(name, args, silent_mode=False):
