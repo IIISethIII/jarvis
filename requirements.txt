@@ -5,4 +5,5 @@ pvporcupine
 pvcobra
 pygame
 numpy
+/home/pi/aiyprojects
 # Note: 'aiy' package depends on the specific Google AIY hardware/image
