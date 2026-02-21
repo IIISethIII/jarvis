@@ -70,12 +70,13 @@ def fetch_ha_context():
     
     return [], {}
 
-def get_ha_history(entity_ids, start_time, end_time=None, minimal_response=False):
+def get_ha_history(entity_ids, start_time, end_time=None, minimal_response=False, max_events=100):
     """
     Fetches history for specific entities.
     start_time: datetime object or ISO string.
     end_time: datetime object or ISO string (optional).
     minimal_response: If True, returns only state/last_changed (no attributes).
+    max_events: Maximum number of history states to return per entity.
     """
     if not entity_ids: return []
     
@@ -105,7 +106,21 @@ def get_ha_history(entity_ids, start_time, end_time=None, minimal_response=False
         response = session.get(url, headers=headers, params=params, timeout=60)
         
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            
+            # HA returns a list of lists (one list of state dicts per entity)
+            for i in range(len(data)):
+                if len(data[i]) > max_events:
+                    # Slice to keep only the most recent 'max_events'
+                    data[i] = data[i][-max_events:]
+                    
+                    # Prepend a warning so the LLM knows older context is missing
+                    truncation_warning = {
+                        "state": f"[TRUNCATED] Output exceeded {max_events} events. Older data was removed to save context space."
+                    }
+                    data[i].insert(0, truncation_warning)
+                    
+            return data
         else:
             print(f"[HA History Error] {response.status_code}: {response.text}")
             return []
