@@ -13,6 +13,11 @@ from jarvis.services import memory
 from aiy.leds import Color
 from jarvis.core.tools import execute_tool, FUNCTION_DECLARATIONS
 
+# Rough pricing for Gemini 2.5 Flash Live (Fast Brain), as of Feb 2026 (USD)
+# Uses the same token pricing as standard Gemini 2.5 Flash.
+LIVE_PRICE_PER_M_INPUT = 0.30
+LIVE_PRICE_PER_M_OUTPUT = 2.50
+
 # --- 1. The Tool Declaration (Fast Brain) ---
 # We reuse the declarations from llm.py for simple local tools
 FAST_TOOLS = [
@@ -138,6 +143,10 @@ class JarvisHybridRouter:
         # Tracks the last time there was any interaction on the Live websocket
         # (user audio sent OR model/tool response received). Used for idle timeout.
         self.last_activity_time = time.time()
+
+        # Accumulated token usage for the Live API (Fast Brain) session.
+        self.live_input_tokens = 0
+        self.live_output_tokens = 0
         
         # Explicitly pass the API key from config since it's not set in the environment by default
         # config.GEMINI_KEYS is a list of keys, we use the first one for the Live API
@@ -331,6 +340,24 @@ class JarvisHybridRouter:
                     # Any response from the server (tool call, thoughts, audio, etc.)
                     # counts as activity and should reset the idle timer.
                     self.last_activity_time = time.time()
+
+                    # Track token usage from the Live API (if provided by the SDK).
+                    usage = getattr(response, "usage_metadata", None) or getattr(response, "usageMetadata", None)
+                    if usage is not None:
+                        # Prefer snake_case attributes; fall back to camelCase if needed.
+                        in_tokens = getattr(usage, "prompt_token_count", None)
+                        if in_tokens is None:
+                            in_tokens = getattr(usage, "promptTokenCount", 0)
+                        out_tokens = getattr(usage, "candidates_token_count", None)
+                        if out_tokens is None:
+                            out_tokens = getattr(usage, "candidatesTokenCount", 0)
+                        try:
+                            self.live_input_tokens += int(in_tokens or 0)
+                            self.live_output_tokens += int(out_tokens or 0)
+                        except Exception:
+                            # Don't let logging issues break the session.
+                            pass
+
                     server_content = response.server_content
                     if not server_content:
                         # Could be tool calls
@@ -422,6 +449,9 @@ class JarvisHybridRouter:
     async def start_session(self):
         """Establishes the Live API session upon wake word detection."""
         self.should_close = False
+        # Reset Live API token accounting for this session.
+        self.live_input_tokens = 0
+        self.live_output_tokens = 0
         # Initialize last activity timestamp at session start so the idle timer
         # only kicks in after a period with no user/model interaction.
         self.last_activity_time = time.time()
@@ -470,6 +500,20 @@ class JarvisHybridRouter:
             print(f"Connection Lost: {e}", flush=True)
             traceback.print_exc()
         finally:
+            # Log approximate Live API cost for this Fast Brain session (if any tokens were used).
+            try:
+                if self.live_input_tokens or self.live_output_tokens:
+                    cost_usd = (self.live_input_tokens / 1_000_000 * LIVE_PRICE_PER_M_INPUT) + \
+                               (self.live_output_tokens / 1_000_000 * LIVE_PRICE_PER_M_OUTPUT)
+                    cost_eur = cost_usd * 0.95  # Rough USD to EUR conversion
+                    print(
+                        f"💰 LIVE KOSTEN CHECK (Fast Brain): "
+                        f"~{cost_eur:.6f} € "
+                        f"(input: {self.live_input_tokens} tok, output: {self.live_output_tokens} tok)"
+                    )
+            except Exception as e:
+                print(f" [Fast Brain] Could not log Live API cost: {e}", flush=True)
+
             print("💡 LED: OFF (Disconnected)", flush=True)
             self.leds.update(self.leds.rgb_off())
             
