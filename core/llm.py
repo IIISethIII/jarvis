@@ -1,6 +1,7 @@
 # jarvis/core/llm.py
 import datetime
 import base64
+import json
 from jarvis.config import get_gemini_url, SAFETY_SETTINGS
 from jarvis.state import CONVERSATION_HISTORY, HISTORY_LOCK
 from jarvis.utils import session
@@ -317,11 +318,11 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
     total_input_tokens = 0
     total_output_tokens = 0
     
-    # Prices for Gemini 2.5 Flash (as of Q4 2024, approximate values in USD)
-    # Input: $0.075 / 1M Tokens
-    # Output: $0.30 / 1M Tokens
-    PRICE_PER_M_INPUT = 0.075
-    PRICE_PER_M_OUTPUT = 0.30
+    # Prices for Gemini 2.5 Flash (as of Feb 2026, USD)
+    # Input: $0.30 / 1M tokens
+    # Output: $2.50 / 1M tokens
+    PRICE_PER_M_INPUT = 0.30
+    PRICE_PER_M_OUTPUT = 2.50
 
     try:
         # --- AGENTIC LOOP ---
@@ -402,6 +403,13 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
                            (total_output_tokens / 1_000_000 * PRICE_PER_M_OUTPUT)
                 cost_eur = cost_usd * 0.95 # Rough USD to EUR conversion
                 
+                # Log only the FINAL request payload that produced the user-visible answer
+                try:
+                    print("\n[Slow Brain] Final Gemini request payload:")
+                    print(json.dumps(payload, indent=2, ensure_ascii=False))
+                except Exception as log_err:
+                    print(f"[LLM] Could not log Gemini payload: {log_err}")
+
                 print(f"💰 KOSTEN CHECK (Schritte: {step_count+1}), Kosten: ~{cost_eur:.6f} €")
 
                 text = "".join(final_text_parts)
