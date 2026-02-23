@@ -6,6 +6,26 @@ from jarvis.config import HA_URL, HA_TOKEN, VOLUME_STEP
 from jarvis.utils import session
 from jarvis import state as global_state 
 
+MAX_ATTR_LENGTH = 160
+
+def _prune_attr_value(value, max_length: int = MAX_ATTR_LENGTH):
+    """
+    Ensures that Home Assistant attribute values cannot explode the prompt/context.
+    Converts the value to a string and truncates it if it exceeds max_length,
+    appending an indicator so the LLM knows data was cut.
+    """
+    try:
+        text = str(value)
+    except Exception:
+        try:
+            text = json.dumps(value, default=str)
+        except Exception:
+            text = repr(value)
+    if len(text) <= max_length:
+        return text
+    overflow = len(text) - max_length
+    return text[:max_length] + f"... [TRUNCATED +{overflow} chars]"
+
 def fetch_ha_context():
     """
     Holt den Status aller Geräte.
@@ -56,7 +76,7 @@ def fetch_ha_context():
                 
                 for k, v in attrs.items():
                     if k not in ignored_attributes:
-                        clean_entity["attributes"][k] = v
+                        clean_entity["attributes"][k] = _prune_attr_value(v)
                 if not clean_entity["attributes"]: del clean_entity["attributes"]
                 
                 llm_context.append(clean_entity)
