@@ -27,39 +27,55 @@ def schedule_wakeup(minutes, reason="Routine Check"):
     except Exception as e:
         return f"Fehler beim Planen: {e}"
 
-def init_audio_settings():
-    """Sets ALSA settings optimized for your specific setup."""
-    print(" [Audio] Setting Optimized Settings...")
-    time.sleep(1)
-
-def init_audio_settings():
-    # ... (Code davor) ...
+def get_bonnet_card_index():
+    """
+    Dynamically finds the card index for the AIY Voice Bonnet.
+    Returns the index (int) or None if not found.
+    """
     try:
-        # 1. Maximale Basis-Lautstärke
-        os.system("amixer -c 0 sset 'Mono ADC' 100%")
-        os.system("amixer -c 0 sset 'ADC' 100%")
+        with open("/proc/asound/cards", "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                if "aiyvoicebonnet" in line.lower():
+                    # The index is the first character of the line (e.g., " 1 [aiyvoicebonnet...]")
+                    return int(line.strip().split()[0])
+    except Exception as e:
+        print(f" [System] Error detecting sound card: {e}")
+    return None
 
-        # 2. Der "Sweet Spot" Boost (Deine Einstellung)
-        os.system("amixer -c 0 sset 'Mono ADC Boost' 3")
-        os.system("amixer -c 0 sset 'ADC Boost' 1")
-        
-        # 3. Wiedergabe
-        os.system("amixer -c 0 sset 'Speaker' 50%")
-        os.system("amixer -c 0 sset 'Speaker Channel' unmute")
-        
+def init_audio_settings():
+    """Sets ALSA settings dynamically by detecting the Bonnet index."""
+    card_idx = get_bonnet_card_index()
+    if card_idx is None:
+        print(" [Audio Error] AIY Voice Bonnet not found in /proc/asound/cards")
+        return False
+
+    print(f" [Audio] Setting Optimized Settings for Card {card_idx}...")
+    try:
+        # Use the detected card_idx instead of hardcoded numbers
+        os.system(f"amixer -c {card_idx} sset 'Mono ADC' 100% > /dev/null 2>&1")
+        os.system(f"amixer -c {card_idx} sset 'ADC' 100% > /dev/null 2>&1")
+        os.system(f"amixer -c {card_idx} sset 'Mono ADC Boost' 3 > /dev/null 2>&1")
+        os.system(f"amixer -c {card_idx} sset 'ADC Boost' 1 > /dev/null 2>&1")
+        os.system(f"amixer -c {card_idx} sset 'Speaker' 35% > /dev/null 2>&1")
+        os.system(f"amixer -c {card_idx} sset 'Speaker Channel' unmute > /dev/null 2>&1")
         return True
     except Exception as e:
         print(f" [Audio Error] {e}")
         return False
 
 def set_system_volume(volume_level):
-    """Sets local system volume."""
+    """Sets local system volume using dynamic index detection."""
+    card_idx = get_bonnet_card_index()
+    if card_idx is None:
+        return "Fehler: Soundkarte nicht gefunden."
+        
     try:
         vol = max(0, min(100, int(volume_level)))
-        os.system(f"amixer -c 0 sset 'Speaker' {vol}%")
-        return f"Systemlautstärke auf {vol} Prozent gesetzt."
-    except:
-        return "Fehler beim Einstellen der Systemlautstärke."
+        os.system(f"amixer -c {card_idx} sset 'Speaker' {vol}%")
+        return f"Systemlautstärke auf {vol} Prozent gesetzt (Karte {card_idx})."
+    except Exception as e:
+        return f"Fehler beim Einstellen der Systemlautstärke: {e}"
 
 def restart_service():
     """Restarts the systemd service via subprocess."""
