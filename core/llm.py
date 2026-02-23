@@ -228,6 +228,22 @@ def trim_history():
     from collections import deque
     CONVERSATION_HISTORY = deque(final_history)
 
+def _strip_thought_signature(parts):
+    """
+    Gemini may return a huge `thoughtSignature` field (metadata). It is not needed
+    for our agent loop and only bloats the next request payload, so we drop it
+    before storing/resending history.
+    """
+    if not isinstance(parts, list):
+        return parts
+    cleaned = []
+    for p in parts:
+        if isinstance(p, dict) and "thoughtSignature" in p:
+            p = dict(p)
+            p.pop("thoughtSignature", None)
+        cleaned.append(p)
+    return cleaned
+
 def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
     from jarvis.config import DIM_PURPLE 
     if not silent_mode:
@@ -392,7 +408,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
                     })
                 
                 with HISTORY_LOCK:
-                    CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
+                    CONVERSATION_HISTORY.append({"role": "model", "parts": _strip_thought_signature(parts_list)})
                     CONVERSATION_HISTORY.append({"role": "function", "parts": tool_responses})
                 
                 step_count += 1
@@ -418,7 +434,7 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
                 text = text.replace("*", "").replace("#", "").replace("`", "")
 
                 with HISTORY_LOCK:
-                    CONVERSATION_HISTORY.append({"role": "model", "parts": parts_list})
+                    CONVERSATION_HISTORY.append({"role": "model", "parts": _strip_thought_signature(parts_list)})
                 return text
 
         return "Abbruch: Zu komplex."
