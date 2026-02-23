@@ -336,7 +336,7 @@ TOOL_IMPLEMENTATIONS = {
     'restart_service': system.restart_service,
     'set_system_volume': system.set_system_volume,
     'perform_google_search': google.perform_google_search_internal,
-    'search_google_maps': google.perform_maps_search,
+#    'search_google_maps': google.perform_maps_search,
     'execute_python_code': system.run_local_python,
     'save_memory': memory.save_memory_tool,
     'retrieve_memory': memory.search_memory_tool,
