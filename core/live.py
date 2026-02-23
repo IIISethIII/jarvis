@@ -153,7 +153,7 @@ class JarvisHybridRouter:
         self.should_close = False
         # Maximum duration for a Live API Fast Brain session (in seconds)
         # Helps auto-close sessions that were opened accidentally (e.g. false wake word)
-        self.session_timeout_seconds = 15
+        self.session_timeout_seconds = 15   
 
     async def _handle_local_tool(self, session, tool_call):
         """Executes a simple HA tool directly and returns the response to the Live API immediately."""
