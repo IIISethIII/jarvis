@@ -6,26 +6,40 @@ from jarvis import config, state as global_state
 from jarvis.utils import session
 import math
 import re
-HABITS_FILE = os.path.join(config.BASE_DIR, "data", "habits.json")
 
-# Ensure data directory exists
-if not os.path.exists(os.path.dirname(HABITS_FILE)):
-    try:
-        os.makedirs(os.path.dirname(HABITS_FILE))
-    except OSError: pass
+import math
+import re
 
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Computes the great-circle distance between two points on a sphere given their longitudes and latitudes.
+    Returns distance in meters.
+    """
+    if lat1 is None or lon1 is None or lat2 is None or lon2 is None:
+        return 0
+    R = 6371000  # Radius of earth in meters
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    
+    a = math.sin(delta_phi / 2.0) ** 2 + \
+        math.cos(phi1) * math.cos(phi2) * \
+        math.sin(delta_lambda / 2.0) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
+# Removed HABITS_FILE
 
 class RoutineTracker:
-    # Removed: should_track, log_event, track_location, get_dist, reverse_geocode etc.
-    # We now strictly rely on HA History for analysis.
+    # We now strictly rely on HA History for analysis and Mem0 for storage.
     pass
 
     def analyze_routine(self):
         """
-        Refactored: Uses HA History instead of local logs.
+        Refactored: Uses HA History to extract chronological events and uses Mem0 LLM to store daily observations.
         """
-        from jarvis.services import ha, google
+        from jarvis.services import ha, google, memory
         
         # 1. Select Entities (Filter)
         all_ctx, _ = ha.fetch_ha_context()
@@ -35,8 +49,8 @@ class RoutineTracker:
         if not relevant_eids:
             return "No relevant entities found for analysis."
 
-        # 2. Fetch History (last 3 Days)
-        days_back = 7
+        # 2. Fetch History (last 2 Days for daily chronologies)
+        days_back = 2
         now = datetime.datetime.now()
         start_time = now - datetime.timedelta(days=days_back)
         
@@ -85,7 +99,7 @@ class RoutineTracker:
                 lat = attributes.get('latitude')
                 lon = attributes.get('longitude')
                 
-                display_name = attributes.get('friendly_name', entity_id)
+                display_name = attributes.get('friendly_name') or entity_id or "Unbekannte Entität"
 
                 if addr:
                     # POI Resolve
@@ -114,54 +128,209 @@ class RoutineTracker:
                     place = poi_cache[key]
                     custom_state = f"At {place}"
                 
-                # Filter spammy updates (e.g. slight GPS drift or sun elevation)
-                # We already filtered entity_ids.
-                # Just append.
-                
                 entry = {
                     "timestamp": timestamp,
                     "weekday": weekday,
                     "entity": display_name,
-                    "state": custom_state
+                    "state": custom_state,
+                    "attributes": attributes
                 }
                 all_events.append(entry)
-
+                
         # Sort all events by time to give linear progression
         all_events.sort(key=lambda x: x['timestamp'])
-        
-        # Convert to string
-        processed_log_str = json.dumps(all_events, indent=1, ensure_ascii=False)
-        
-        # 4. LLM Analysis (Same as before)
-        current_habits = "{}"
-        if os.path.exists(HABITS_FILE):
-             with open(HABITS_FILE, "r", encoding="utf-8") as f:
-                 current_habits = f.read()
 
+        # --- Base Aggregation & State Timelines ---
+        entity_timelines = {}
+        for ev in all_events:
+            ent = ev['entity']
+            if ent not in entity_timelines:
+                entity_timelines[ent] = []
+            
+            timeline = entity_timelines[ent]
+            try:
+                dt = datetime.datetime.strptime(ev['timestamp'], "%Y-%m-%d %H:%M:%S")
+            except:
+                continue
+                
+            state_val = ev['state']
+            
+            if not timeline:
+                timeline.append({"state": state_val, "start": dt, "end": dt})
+            else:
+                last = timeline[-1]
+                if last['state'] == state_val:
+                    # Same state continues, just extend end time
+                    last['end'] = dt
+                else:
+                    # State changed
+                    timeline.append({"state": state_val, "start": dt, "end": dt})
+                    
+        # Compile final robust timeline
+        final_events = []
+        
+        # We need a separate pass for GPS-based entities (person) vs state-based entities
+        # For non-person entities, we use the simple state clustering
+        for ent, timeline in entity_timelines.items():
+            if not ent or (not ent.lower().startswith('person') and not ent.lower().startswith('paul')):
+                 # Normal state aggregation
+                 for stay in timeline:
+                     final_events.append({
+                         "entity": ent,
+                         "state": stay['state'],
+                         "start": stay['start'],
+                         "end": stay['end']
+                     })
+                     
+        # For Person/Location, we do Geospatial Clustering
+        location_events = [e for e in all_events if e['entity'] and (e['entity'].lower().startswith('person') or e['entity'].lower().startswith('paul'))]
+        location_events.sort(key=lambda x: x['timestamp'])
+        
+        stays = []
+        if location_events:
+            current_stay = None
+            
+            for ev in location_events:
+                try:
+                    dt = datetime.datetime.strptime(ev['timestamp'], "%Y-%m-%d %H:%M:%S")
+                except: continue
+                
+                lat = ev['attributes'].get('latitude')
+                lon = ev['attributes'].get('longitude')
+                addr = ev['attributes'].get('geocoded_location') or ev['attributes'].get('address')
+                friendly_name = ev['attributes'].get('friendly_name', ev['entity'])
+                
+                if current_stay is None:
+                    current_stay = {
+                        "entity": friendly_name,
+                        "start": dt,
+                        "end": dt,
+                        "lat": lat,
+                        "lon": lon,
+                        "address": addr,
+                        "is_home": ev['attributes'].get('state') == 'home'
+                    }
+                    continue
+                
+                # Compare distance to current stay center
+                if lat is not None and lon is not None and current_stay['lat'] is not None and current_stay['lon'] is not None:
+                     dist = haversine_distance(current_stay['lat'], current_stay['lon'], lat, lon)
+                     
+                     if dist < 150: # 150m threshold for "same place"
+                         # Still here
+                         current_stay['end'] = dt
+                         if not current_stay['address'] and addr: # Upgrade address if found
+                             current_stay['address'] = addr
+                     else:
+                         # Moved! End previous stay
+                         if (current_stay['end'] - current_stay['start']).total_seconds() > 300: # Min 5 mins to be a stay
+                              stays.append(current_stay)
+                         
+                         current_stay = {
+                             "entity": friendly_name,
+                             "start": dt,
+                             "end": dt,
+                             "lat": lat,
+                             "lon": lon,
+                             "address": addr,
+                             "is_home": ev['attributes'].get('state') == 'home'
+                         }
+                else:
+                    # Fallback to state changes if GPS is missing
+                    if ev['attributes'].get('state') == current_stay.get('state_fallback'):
+                        current_stay['end'] = dt
+                    else:
+                        if (current_stay['end'] - current_stay['start']).total_seconds() > 300:
+                             stays.append(current_stay)
+                        current_stay = {
+                             "entity": friendly_name,
+                             "start": dt,
+                             "end": dt,
+                             "state_fallback": ev['attributes'].get('state')
+                         }
+            
+            # Append last stay
+            if current_stay and (current_stay['end'] - current_stay['start']).total_seconds() > 300:
+                stays.append(current_stay)
+
+        # Resolve addresses for stays
+        for stay in stays:
+             place = None
+             if stay.get('is_home'):
+                 place = "Zuhause"
+             elif stay.get('address'):
+                 if stay['address'] not in poi_cache:
+                     poi_name = google.resolve_location_name(stay['address'])
+                     poi_cache[stay['address']] = poi_name or stay['address']
+                 place = poi_cache[stay['address']]
+             elif stay.get('lat') and stay.get('lon'):
+                 key = f"{stay['lat']:.4f},{stay['lon']:.4f}"
+                 if key not in poi_cache:
+                     poi_name = google.resolve_location_name(f"{stay['lat']}, {stay['lon']}")
+                     poi_cache[key] = poi_name or f"GPS: {stay['lat']:.3f},{stay['lon']:.3f}"
+                 place = poi_cache[key]
+             else:
+                 place = stay.get('state_fallback', 'Unbekannt')
+                 
+             final_events.append({
+                 "entity": stay['entity'],
+                 "state": f"Aufenthalt bei {place}",
+                 "start": stay['start'],
+                 "end": stay['end']
+             })
+             
+        # Create Bewegung between stays if there is a gap > 10 mins
+        transits = []
+        stays.sort(key=lambda x: x['start'])
+        for i in range(len(stays) - 1):
+             gap = (stays[i+1]['start'] - stays[i]['end']).total_seconds()
+             if gap > 600: # 10 mins Gap
+                 final_events.append({
+                     "entity": stays[i]['entity'],
+                     "state": "Bewegung",
+                     "start": stays[i]['end'],
+                     "end": stays[i+1]['start']
+                 })
+
+        # Final Sort
+        final_events.sort(key=lambda x: x['start'])
+        
+        compiled_list = []
+        for stay in final_events:
+            start_str = stay['start'].strftime("%d.%m. %H:%M")
+            duration_mins = int((stay['end'] - stay['start']).total_seconds() / 60)
+            
+            if duration_mins > 5:
+                end_str = stay['end'].strftime("%H:%M")
+                compiled_list.append(f"[{start_str} bis {end_str} ({duration_mins} min)] {stay['entity']}: {stay['state']}")
+            else:
+                compiled_list.append(f"[{start_str}] {stay['entity']}: {stay['state']}")
+
+        processed_log_str = "\n".join(compiled_list)
+        
+        print(f"   [Routine] Processed {len(final_events)} events into {len(compiled_list)} compiled lines.")
+        if not processed_log_str.strip():
+            print("   [Routine] WARNING: processed_log_str is EMPTY!")
+        
+        # 4. LLM Analysis
         prompt = f"""
-        Analyze the following Home Assistant history ({days_back} days) and identify the user's DAILY ROUTINE and HABITS.
+        Du analysierst die chronologisch zusammengefasste Home Assistant History der letzten {days_back} Tage, um die täglichen Erlebnisse, Routinen und Besonderheiten des Users festzuhalten.
         
-        CURRENT KNOWN HABITS (JSON):
-        {current_habits}
-        
-        NEW HISTORY DATA:
+        HISTORY DATA (Geclustert nach Aufenthalten und Bewegung):
         {processed_log_str}
         
         TASK:
-        1. Identify consistent patterns (e.g., "Always leaves for work around 08:00 on Weekdays", "Goes to bed around 23:00").
-        2. Merge new patterns with known habits. Update times if they shifted.
-        3. IGNORE one-off anomalies. Focus on repetition.
-        4. Output strictly a JSON object with this structure:
+        1. Fasse den Tagesverlauf detailreich in 2-4 präzisen Sätzen zusammen (z.B. "Am 22.02. verließ der User um 08:30 Uhr das Haus, war 2 Stunden unterwegs zur Bibliothek und ab 16:00 Uhr wieder Zuhause.").
+        2. Achte auf Schlaf-/Wachzeiten (aus Lampen/Geräten ableitbar), 'Aufenthalt'-Orte und 'Bewegung'-Zeiten ("In Bewegung").
+        3. Formuliere die Sätze streng objektiv und präzise, da sie direkt in eine Memory-Datenbank eingespeist werden.
+        4. Wenn es einen Tag ohne Bewegung gab und als Ort nur "Zuhause" auftaucht, berichte klar, dass der User den ganzen Tag zu Hause war.
+        5. Output strictly a JSON object mit einem Array "observations", in dem jeder Satz ein eigenes Array-Element ist.
+        
+        Beispiel:
         {{
-            "morning_start": "HH:MM",
-            "work_start": "HH:MM",
-            "work_end": "HH:MM",
-            "evening_relax": "HH:MM",
-            "bedtime": "HH:MM",
-            "detected_patterns": [
-                "Leaves house at 07:45 (Mon-Fri)",
-                "Turns on PC at 18:00",
-                ...
+            "observations": [
+                "Am 22.02. verbrachte der User die meiste Zeit Zuhause und verließ erst gegen 16:30 Uhr das Haus, um für 45 Minuten zu Rewe zu gehen.",
+                "Abends war der User ab 19:00 Uhr wieder Zuhause, wobei Aktivitäten bis ca. 23:45 Uhr festgestellt wurden."
             ]
         }}
         """
@@ -174,76 +343,56 @@ class RoutineTracker:
             }
             resp = session.post(url, json=payload, timeout=45)
             if resp.status_code == 200:
-                new_habits_json = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                result_json_str = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                result_data = json.loads(result_json_str)
+                observations = result_data.get("observations", [])
                 
-                with open(HABITS_FILE, "w", encoding="utf-8") as f:
-                    f.write(new_habits_json)
+                # Save to Mem0
+                if hasattr(memory, 'memory_client') and memory.memory_client:
+                    for obs in observations:
+                        print(f"   [Routine] Speichere Memory: {obs}")
+                        memory.memory_client.add(obs, user_id="paul")
                 
-                return f"Routine Analysis Complete. Habits updated."
+                return f"Routine Analysis Complete. {len(observations)} observations saved to Mem0."
             else:
                  return f"LLM Error: {resp.status_code}"
                  
         except Exception as e:
             return f"Analysis failed: {e}"
 
-    def get_predicted_wakeup(self):
-        """
-        Returns the next timestamp where we expect user activity based on habits.
-        """
-        if not os.path.exists(HABITS_FILE): return None, None
-        
-        try:
-            with open(HABITS_FILE, "r", encoding="utf-8") as f:
-                habits = json.load(f)
-            
-            now = datetime.datetime.now()
-            today_str = now.strftime("%Y-%m-%d")
-            
-            # Simple logic: Find next milestone in the day
-            candidates = []
-            for key in ["morning_start", "work_start", "work_end", "evening_relax", "bedtime"]:
-                t_str = habits.get(key)
-                if t_str:
-                    # Parse HH:MM
-                    h, m = map(int, t_str.split(":"))
-                    dt = datetime.datetime.now().replace(hour=h, minute=m, second=0, microsecond=0)
-                    if dt > now:
-                        candidates.append((dt, key))
-            
-            if candidates:
-                # Get earliest next event
-                candidates.sort(key=lambda x: x[0])
-                next_dt, reason = candidates[0]
-                return next_dt.timestamp(), f"Routine: {reason}"
-                
-        except Exception as e:
-            print(f" [Routine] Prediction error: {e}")
-            
-        return None, None
-
     def get_habits_summary(self):
         """
-        Returns a string representation of learned habits.
+        Returns a string representation of learned habits by searching Mem0.
+        To avoid high latency during the prompt generation, we do a quick 
+        broad search on 'Tagesablauf Routine Gewohnheiten' or keep it lightweight.
         """
-        if not os.path.exists(HABITS_FILE): return "Noch keine Gewohnheiten gelernt."
+        from jarvis.services import memory
+        if not hasattr(memory, 'memory_client') or not memory.memory_client:
+            return "Noch keine Gewohnheiten gelernt."
+            
         try:
-            with open(HABITS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
+            hits = []
+            results = memory.memory_client.search(query="Tagesablauf Routine Gewohnheiten", user_id="paul", limit=5)
+            if isinstance(results, dict) and 'results' in results:
+                results_list = results['results']
+            elif isinstance(results, dict) and 'memories' in results:
+                results_list = results['memories']
+            else:
+                results_list = results
+
+            for res in results_list:
+                if isinstance(res, dict):
+                    memory_text = res.get('memory', '')
+                else:
+                    memory_text = getattr(res, 'memory', '')
+                if memory_text:
+                    hits.append(f"- {memory_text}")
             
-            # Simple Text Format
-            lines = []
-            if "detected_patterns" in data:
-                lines.append("DETECTED PATTERNS:")
-                for p in data["detected_patterns"]:
-                    lines.append(f"- {p}")
-            
-            lines.append("SCHEDULE:")
-            for k in ["morning_start", "work_start", "work_end", "evening_relax", "bedtime"]:
-                if k in data: lines.append(f"- {k}: {data[k]}")
-                
-            return "\n".join(lines)
+            if hits:
+                return "\n".join(hits)
+            return "Wenig Routinedaten."
         except Exception as e:
-            return f"Fehler: {e}"
+            return f"Fehler beim Abrufen von Habits: {e}"
 
 def check_background_routine():
     """

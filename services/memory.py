@@ -1,36 +1,48 @@
-import json
 import os
 import time
-import numpy as np
+import threading
 from jarvis import config
 from jarvis.utils import session
 from jarvis.services import routine
+from mem0 import Memory
 
-# --- EMBEDDING HELPER ---
-EMBEDDING_MODEL = "models/text-embedding-004"
+# --- INITIALIZE MEM0 ---
+mem0_config = {
+    "vector_store": {
+        "provider": "chroma",
+        "config": {
+            "collection_name": "jarvis_memories",
+            "path": config.MEM0_DB_DIR,
+        }
+    },
+    "llm": {
+        "provider": "litellm",
+        "config": {
+            "model": "gemini/gemini-2.5-flash",
+            "temperature": 0.1,
+            "max_tokens": 8000,
+        }
+    },
+    "embedder": {
+        "provider": "gemini",
+        "config": {
+            "model": "gemini-embedding-001",
+        }
+    }
+}
 
-def get_embedding(text):
-    if not text or not text.strip(): return None
-
-    key = config.get_next_key()
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/{EMBEDDING_MODEL}:embedContent?key={key}"
-
-    payload = {"model": EMBEDDING_MODEL, "content": {"parts": [{"text": text}]}}
-    try:
-        response = session.post(api_url, json=payload, timeout=5)
-        if response.status_code == 200:
-            values = response.json()['embedding']['values']
-            return np.array(values, dtype=np.float32)
-    except Exception as e:
-        print(f" [Memory] Embedding Error: {e}")
-    return None
+try:
+    memory_client = Memory.from_config(mem0_config)
+except Exception as e:
+    print(f" [Memory] Failed to initialize Mem0: {e}")
+    memory_client = None
 
 # --- HYBRID RETRIEVAL ---
 def get_hybrid_context(query_text):
     """
     Combines:
     1. CORE MEMORY (The 'BIOS' from core.md)
-    2. RELEVANT RECALL (Vector search from past conversations)
+    2. RELEVANT RECALL (Mem0 Vector DB)
     """
     # 1. Load Core Memory (Always prioritized)
     core_content = ""
@@ -38,32 +50,36 @@ def get_hybrid_context(query_text):
         with open(config.CORE_FILE, 'r', encoding='utf-8') as f:
             core_content = f.read()
 
-    # 2. Vector Search (RAG)
+    # 2. Vector Search (Mem0)
     rag_content = "No specific past details found."
     
-    if query_text:
-        vec = get_embedding(query_text)
-        if vec is not None and os.path.exists(config.VECTOR_NPY_FILE):
-            try:
-                vectors = np.load(config.VECTOR_NPY_FILE)
-                with open(config.VECTOR_DB_FILE, 'r', encoding='utf-8') as f:
-                    db = json.load(f)
+    if query_text and memory_client is not None:
+        try:
+            # Mem0 search returns a list of dictionaries with 'memory', 'score', etc.
+            # `memory_client.search()` can sometimes return a dictionary with a 'results' key or direct list.
+            results = memory_client.search(query=query_text, user_id="paul", limit=10)
+            if isinstance(results, dict) and 'results' in results:
+                results_list = results['results']
+            elif isinstance(results, dict) and 'memories' in results:
+                results_list = results['memories']
+            else:
+                results_list = results
                 
-                # Cosine Similarity (Dot product for normalized vectors)
-                scores = np.dot(vectors, vec)
-                # Get Top 3
-                top_k_indices = np.argsort(scores)[::-1][:3]
-                
-                hits = []
-                for idx in top_k_indices:
-                    # Filter for relevance (threshold 0.45 is a good baseline)
-                    if scores[idx] > 0.45:
-                        hits.append(f"- {db[idx]['text']} (Relevance: {scores[idx]:.2f})")
-                
-                if hits:
-                    rag_content = "\n".join(hits)
-            except Exception as e:
-                print(f" [Memory] Search Error: {e}")
+            hits = []
+            for res in results_list:
+                # Handle cases where res is a dict or an object
+                if isinstance(res, dict):
+                    memory_text = res.get('memory', '')
+                else:
+                    memory_text = getattr(res, 'memory', '')
+
+                if memory_text:
+                    hits.append(f"- {memory_text[:300]}")
+            
+            if hits:
+                rag_content = "\n".join(hits)
+        except Exception as e:
+            print(f" [Memory] Search Error: {e}")
 
     # 3. Format for the System Prompt
     return f"""
@@ -75,148 +91,83 @@ def get_hybrid_context(query_text):
     """
 
 # --- SAVING & DREAMING ---
+def _async_add_memory(messages):
+    """Background task to add memories to Mem0 without blocking the LLM."""
+    if memory_client is None: return
+    try:
+        memory_client.add(messages, user_id="paul")
+    except Exception as e:
+        print(f" [Memory] Async Add Error: {e}")
+
 def save_interaction(user_text, assistant_text):
     """
-    Saves the turn to BOTH the Vector DB (for search) AND the Episodic Log (for dreaming).
+    Saves the turn to Mem0 in real-time. Replaces old numpy+episodic logic.
     """
-    timestamp = time.strftime("%Y-%m-%d %H:%M")
-    full_entry = f"[{timestamp}] User: {user_text} | Jarvis: {assistant_text}"
-
-    # A. Save to Vector DB (Immediate Recall)
-    vec = get_embedding(full_entry)
-    if vec is not None:
-        db = []
-        vectors = None
-        
-        if os.path.exists(config.VECTOR_DB_FILE):
-            with open(config.VECTOR_DB_FILE, 'r', encoding='utf-8') as f: db = json.load(f)
-        if os.path.exists(config.VECTOR_NPY_FILE):
-            vectors = np.load(config.VECTOR_NPY_FILE)
-        
-        db.append({"text": full_entry, "timestamp": time.time()})
-        
-        if vectors is None: vectors = np.array([vec])
-        else: vectors = np.vstack([vectors, vec])
-        
-        with open(config.VECTOR_DB_FILE, 'w', encoding='utf-8') as f:
-            json.dump(db, f, indent=2, ensure_ascii=False)
-        np.save(config.VECTOR_NPY_FILE, vectors)
-
-    # B. Save to Episodic Log (For the Dreamer)
-    with open(config.EPISODIC_FILE, "a", encoding="utf-8") as f:
-        f.write(f"\n{full_entry}")
+    messages = [
+        {"role": "user", "content": user_text},
+        {"role": "assistant", "content": assistant_text}
+    ]
+    # Fire and forget in a background thread to prevent latency
+    threading.Thread(target=_async_add_memory, args=(messages,), daemon=True).start()
 
 def dream():
     """
-    AGENTIC UPDATE: Reads episodic logs -> Updates Core Memory -> Wipes logs.
+    Called nightly. The LLM rewriting logic is removed because Mem0 handles 
+    granular updates dynamically. We only keep routine analysis here.
     """
-    if not os.path.exists(config.EPISODIC_FILE): return
-
-    with open(config.EPISODIC_FILE, "r", encoding="utf-8") as f:
-        logs = f.read()
+    print(" [Memory] 🌙 Nightly Maintenance...")
     
-    # Don't dream if nothing happened (save API tokens)
-    if len(logs) < 50: return 
-
-    print(" [Memory] 🌙 Dreaming (Consolidating Memory)...")
-    
-    current_core = ""
-    if os.path.exists(config.CORE_FILE):
-        with open(config.CORE_FILE, 'r', encoding='utf-8') as f: current_core = f.read()
-
-    # The "Maintainer" Prompt
-    prompt = f"""
-    You are the Memory Manager for JARVIS.
-    
-    TASK: Incorporate new information from the 'Recent Logs' into the 'Core Memory'.
-    
-    1. CURRENT CORE MEMORY:
-    {current_core}
-    
-    2. RECENT LOGS (New Information):
-    {logs}
-    
-    INSTRUCTIONS:
-    - Extract PERMANENT facts (Projects, Hardware Specs, Personal Preferences, Health, Working Code).
-    - IGNORE trivial chat (Greetings, Jokes, Weather).
-    - IF information conflicts, the Recent Logs take precedence (Update the facts).
-    - Organize with Markdown Headers (e.g. ## User Profile, ## Hardware, ## Projects).
-    - OUTPUT ONLY the full, updated content for the Core Memory file.
-    """
-    
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1} # Low temp for factual consistency
-    }
-    
+    # Analyze Daily Routine
+    print(" [Memory] 🕵️ Analyzing Daily Routine...")
     try:
-        # Use the standard chat model
-        url = config.get_gemini_url()
-        resp = session.post(url, json=payload, timeout=30)
-        
-        if resp.status_code == 200:
-            new_core = resp.json()['candidates'][0]['content']['parts'][0]['text']
-            
-            # 1. Update Core
-            with open(config.CORE_FILE, "w", encoding="utf-8") as f:
-                f.write(new_core)
-            
-            # 2. Wipe Episodic Log (It is now "consumed")
-            with open(config.EPISODIC_FILE, "w", encoding="utf-8") as f:
-                f.write("")
-                
-            print(" [Memory] ✨ Dream complete. Core updated.")
-
-            # 3. Analyze Daily Routine
-            print(" [Memory] 🕵️ Analyzing Daily Routine...")
-            routine.tracker.analyze_routine()
-        else:
-            print(f" [Memory] Dream failed: {resp.text}")
-            
+        routine.tracker.analyze_routine()
     except Exception as e:
-        print(f" [Memory] Dream Error: {e}")
+        print(f" [Memory] Routine Analysis Error: {e}")
 
 # --- TOOL ADAPTERS (Für jarvis/core/tools.py) ---
 
 def save_memory_tool(text):
     """
-    Speichert einen expliziten Fakt (via Tool-Call) in das episodische Gedächtnis.
-    Der 'Dreamer' wird diesen Fakt heute Nacht in die Core-Memory übernehmen.
+    Speichert einen expliziten Fakt (via Tool-Call) ins Archiv.
     """
-    timestamp = time.strftime("%H:%M")
-    # Wir markieren es als [EXPLICIT], damit der User sieht, dass es gespeichert wurde
-    log_entry = f"\n[{timestamp}] [USER WANTS TO REMEMBER] {text}"
+    if memory_client is None:
+        return "Fehler: Mem0 nicht initialisiert."
     
-    with open(config.EPISODIC_FILE, "a", encoding="utf-8") as f:
-        f.write(log_entry)
-        
-    return f"Notiert: '{text}'. (Wird heute Nacht verarbeitet)"
+    try:
+        # Synchrone Speicherung für explizite Tools (damit es sofort genutzt werden kann)
+        memory_client.add(text, user_id="paul")
+        return f"Notiert: '{text}'."
+    except Exception as e:
+        return f"Fehler beim Speichern: {e}"
 
 def search_memory_tool(search_query):
     """
-    Erlaubt dem Agenten, manuell im Vektor-Speicher zu suchen, falls
+    Erlaubt dem Agenten, manuell im Archiv zu suchen, falls
     der initiale Kontext nicht gereicht hat.
     """
-    # Wir nutzen die Logik von get_hybrid_context, geben aber nur die Hits zurück
-    vec = get_embedding(search_query)
-    if vec is None: return "Fehler beim Berechnen des Vektors."
+    if memory_client is None:
+        return "Fehler: Mem0 nicht initialisiert."
     
     hits = []
-    if os.path.exists(config.VECTOR_NPY_FILE) and os.path.exists(config.VECTOR_DB_FILE):
-        try:
-            vectors = np.load(config.VECTOR_NPY_FILE)
-            with open(config.VECTOR_DB_FILE, 'r', encoding='utf-8') as f:
-                db = json.load(f)
-            
-            scores = np.dot(vectors, vec)
-            top_k = np.argsort(scores)[::-1][:5] # Top 5 für manuelle Suche
-            
-            for idx in top_k:
-                if scores[idx] > 0.4:
-                    hits.append(f"- {db[idx]['text']}")
-        except Exception as e:
-            return f"Suchfehler: {e}"
-            
+    try:
+        results = memory_client.search(query=search_query, user_id="paul", limit=10)
+        if isinstance(results, dict) and 'results' in results:
+            results_list = results['results']
+        elif isinstance(results, dict) and 'memories' in results:
+            results_list = results['memories']
+        else:
+            results_list = results
+
+        for res in results_list:
+            if isinstance(res, dict):
+                memory_text = res.get('memory', '')
+            else:
+                memory_text = getattr(res, 'memory', '')
+            if memory_text:
+                hits.append(f"- {memory_text}")
+    except Exception as e:
+        return f"Suchfehler: {e}"
+        
     if not hits:
         return "Keine relevanten Einträge im Archiv gefunden."
         

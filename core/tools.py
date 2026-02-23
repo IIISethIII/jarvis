@@ -312,6 +312,15 @@ FUNCTION_DECLARATIONS = [
             "required": ["entity_ids", "start_time"]
         }
     },
+    {
+        "name": "end_conversation",
+        "description": "Beendet die aktuelle Konversation. Nutze dies, wenn der User meint, dass er fertig ist (z.B. 'Danke, das wars', 'Tschüss', 'Machs gut').",
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {}, 
+            "required": []
+        }
+    },
 ]
 
 # 2. Implementation Map
@@ -338,6 +347,7 @@ TOOL_IMPLEMENTATIONS = {
     'schedule_conditional_wakeup': ha.create_ha_automation,
     'delete_wakeup_automation': ha.delete_ha_automation,
     'get_ha_history': ha.get_ha_history,
+    'end_conversation': lambda **kwargs: "Konversation wird beendet.",
 }
 
 def execute_tool(name, args, silent_mode=False):

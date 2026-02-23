@@ -5,5 +5,9 @@ pvporcupine
 pvcobra
 pygame
 numpy
+chromadb
+mem0ai
+litellm
+google-genai
 /home/pi/aiyprojects
 # Note: 'aiy' package depends on the specific Google AIY hardware/image
