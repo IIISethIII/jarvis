@@ -139,7 +139,7 @@ class JarvisHybridRouter:
         # Explicitly pass the API key from config since it's not set in the environment by default
         # config.GEMINI_KEYS is a list of keys, we use the first one for the Live API
         api_key = config.GEMINI_KEYS[0] if hasattr(config, 'GEMINI_KEYS') and config.GEMINI_KEYS else None
-        self.client = genai.Client(api_key=api_key) 
+        self.client = genai.Client(http_options={"api_version": "v1alpha"}, api_key=api_key) 
         
         # Audio output stream (Gemini Live API TTS outputs 24kHz PCM by default)
         self.pa = pyaudio.PyAudio()
@@ -151,6 +151,9 @@ class JarvisHybridRouter:
         )
         
         self.should_close = False
+        # Maximum duration for a Live API Fast Brain session (in seconds)
+        # Helps auto-close sessions that were opened accidentally (e.g. false wake word)
+        self.session_timeout_seconds = 15
 
     async def _handle_local_tool(self, session, tool_call):
         """Executes a simple HA tool directly and returns the response to the Live API immediately."""
@@ -370,6 +373,26 @@ class JarvisHybridRouter:
             print(f" [Fast Brain] Receive Loop Error: {e}")
             traceback.print_exc()
 
+    async def _session_timeout_watchdog(self, session):
+        """Automatically closes the Live API session after a fixed timeout.
+
+        This is primarily a safety net for accidental wake-word activations:
+        if no other logic has requested a close within `session_timeout_seconds`,
+        we proactively close the websocket session to save resources.
+        """
+        try:
+            await asyncio.sleep(self.session_timeout_seconds)
+            if not self.should_close:
+                print(f" [Fast Brain] Session timeout reached ({self.session_timeout_seconds}s). Closing session.", flush=True)
+                self.should_close = True
+                try:
+                    await session.close()
+                except Exception as e:
+                    print(f" [Fast Brain] Error closing session on timeout: {e}", flush=True)
+        except asyncio.CancelledError:
+            # Normal path when the session finishes earlier
+            print(" [Fast Brain] Session timeout watchdog cancelled", flush=True)
+
     async def start_session(self):
         """Establishes the Live API session upon wake word detection."""
         self.should_close = False
@@ -378,6 +401,8 @@ class JarvisHybridRouter:
         
         c = types.LiveConnectConfig(
              response_modalities=["AUDIO"],
+             enable_affective_dialog=True,
+             thinking_config=types.ThinkingConfig(thinking_budget=-1, include_thoughts=True),
              system_instruction=get_dynamic_system_instruction(),
              tools=[live_api_tools],
              speech_config=types.SpeechConfig(
@@ -398,16 +423,19 @@ class JarvisHybridRouter:
                 
                 send_task = asyncio.create_task(self._mic_send_loop(session))
                 receive_task = asyncio.create_task(self._receive_loop(session))
+                timeout_task = asyncio.create_task(self._session_timeout_watchdog(session))
                 
-                # Wait until either the send loop detects a close, or the receive loop breaks
+                # Wait until either the send loop detects a close, the receive loop breaks,
+                # or the timeout watchdog triggers.
                 await asyncio.wait(
-                    [send_task, receive_task], 
+                    [send_task, receive_task, timeout_task], 
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
                 # Cleanup tasks if they are still pending
                 send_task.cancel()
                 receive_task.cancel()
+                timeout_task.cancel()
                 
         except Exception as e:
             print(f"Connection Lost: {e}", flush=True)
