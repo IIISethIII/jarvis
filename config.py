@@ -39,6 +39,7 @@ VOLUME_STEP = 7 # Volume adjustment step in percentage points
 DIM_BLUE = Color.blend(Color.BLUE, Color.BLACK, 0.2)
 DIM_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.1)     # higher number = dimmer
 BRIGHT_PURPLE = Color.blend(Color.PURPLE, Color.BLACK, 0.5)
+COLOR_ALARM = (255, 60, 0) # Orange
 
 # --- SAFETY SETTINGS ---
 SAFETY_SETTINGS = [
@@ -71,6 +72,11 @@ CORE_FILE = os.path.join(MEMORY_DIR, "core.md")         # The "BIOS" (Facts)
 EPISODIC_FILE = os.path.join(MEMORY_DIR, "episodic.md") # The "Daily Log"
 VECTOR_DB_FILE = os.path.join(MEMORY_DIR, "vectors.json") # Raw Text for search
 VECTOR_NPY_FILE = os.path.join(MEMORY_DIR, "vectors.npy") # Embeddings for search
+MEM0_DB_DIR = os.path.join(MEMORY_DIR, "mem0_db")       # Mem0 Vector Storage
 
 if not os.path.exists(MEMORY_DIR):
     os.makedirs(MEMORY_DIR)
+
+# Mem0 / LiteLLM looks for GEMINI_API_KEY
+if GEMINI_KEYS:
+    os.environ["GEMINI_API_KEY"] = GEMINI_KEYS[0]
