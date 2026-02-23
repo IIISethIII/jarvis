@@ -135,6 +135,9 @@ class JarvisHybridRouter:
         self._active_backend_task = None
         self.is_playing_audio = False
         self.last_audio_end_time = 0.0
+        # Tracks the last time there was any interaction on the Live websocket
+        # (user audio sent OR model/tool response received). Used for idle timeout.
+        self.last_activity_time = time.time()
         
         # Explicitly pass the API key from config since it's not set in the environment by default
         # config.GEMINI_KEYS is a list of keys, we use the first one for the Live API
@@ -151,8 +154,9 @@ class JarvisHybridRouter:
         )
         
         self.should_close = False
-        # Maximum duration for a Live API Fast Brain session (in seconds)
-        # Helps auto-close sessions that were opened accidentally (e.g. false wake word)
+        # Maximum idle time (in seconds) for a Live API Fast Brain session.
+        # If there is no interaction between user and model (no audio sent, no
+        # server responses) for this duration, the session is auto-closed.
         self.session_timeout_seconds = 15   
 
     async def _handle_local_tool(self, session, tool_call):
@@ -324,6 +328,9 @@ class JarvisHybridRouter:
             while True:
                 turn = session.receive()
                 async for response in turn:
+                    # Any response from the server (tool call, thoughts, audio, etc.)
+                    # counts as activity and should reset the idle timer.
+                    self.last_activity_time = time.time()
                     server_content = response.server_content
                     if not server_content:
                         # Could be tool calls
@@ -374,21 +381,40 @@ class JarvisHybridRouter:
             traceback.print_exc()
 
     async def _session_timeout_watchdog(self, session):
-        """Automatically closes the Live API session after a fixed timeout.
+        """Automatically closes the Live API session after a period of *inactivity*.
 
-        This is primarily a safety net for accidental wake-word activations:
-        if no other logic has requested a close within `session_timeout_seconds`,
-        we proactively close the websocket session to save resources.
+        If there is no interaction between user and model (no audio sent from the mic
+        loop and no server responses received) for `session_timeout_seconds`, we
+        proactively close the websocket session to save resources.
         """
         try:
-            await asyncio.sleep(self.session_timeout_seconds)
-            if not self.should_close:
-                print(f" [Fast Brain] Session timeout reached ({self.session_timeout_seconds}s). Closing session.", flush=True)
-                self.should_close = True
-                try:
-                    await session.close()
-                except Exception as e:
-                    print(f" [Fast Brain] Error closing session on timeout: {e}", flush=True)
+            # Small polling loop so we can react to activity and to external closes.
+            check_interval = 1.0
+            while True:
+                await asyncio.sleep(check_interval)
+                if self.should_close:
+                    # Another part of the system requested shutdown; just exit.
+                    return
+
+                # If the Slow Brain backend is currently running, we treat the
+                # session as "active" regardless of mic/model activity so the
+                # connection never times out while reasoning is in progress.
+                if self._active_backend_task and not self._active_backend_task.done():
+                    continue
+
+                idle_for = time.time() - self.last_activity_time
+                if idle_for >= self.session_timeout_seconds:
+                    print(
+                        f" [Fast Brain] Idle timeout reached "
+                        f"({idle_for:.1f}s >= {self.session_timeout_seconds}s). Closing session.",
+                        flush=True,
+                    )
+                    self.should_close = True
+                    try:
+                        await session.close()
+                    except Exception as e:
+                        print(f" [Fast Brain] Error closing session on idle timeout: {e}", flush=True)
+                    return
         except asyncio.CancelledError:
             # Normal path when the session finishes earlier
             print(" [Fast Brain] Session timeout watchdog cancelled", flush=True)
@@ -396,6 +422,9 @@ class JarvisHybridRouter:
     async def start_session(self):
         """Establishes the Live API session upon wake word detection."""
         self.should_close = False
+        # Initialize last activity timestamp at session start so the idle timer
+        # only kicks in after a period with no user/model interaction.
+        self.last_activity_time = time.time()
         print("💡 LED: SOLID BLUE (Connecting to Live API...)", flush=True)
         self.leds.update(Color.BLUE)
         
