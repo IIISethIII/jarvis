@@ -61,6 +61,18 @@ def fetch_ha_context():
                 name = attrs.get('friendly_name', eid)
 
                 if state_val in ["unavailable", "unknown"]: continue
+                
+                # Convert UTC ISO timestamps (like next_alarm) to Local Time for the LLM
+                if isinstance(state_val, str) and "T" in state_val and ("Z" in state_val or "+00:00" in state_val) and len(state_val) >= 19:
+                    try:
+                        # Fix 'Z' for pre-3.11 compatibility
+                        ts_str = state_val.replace('Z', '+00:00')
+                        dt = datetime.datetime.fromisoformat(ts_str)
+                        # Reformat to a clean local string the LLM can easily read like "2026-02-25 08:15"
+                        state_val = dt.astimezone().strftime("%Y-%m-%d %H:%M")
+                    except Exception:
+                        pass
+
                 if eid.endswith("_led"): continue 
                 if domain in ignored_domains: continue
                 if domain == "sensor":

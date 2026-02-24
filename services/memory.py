@@ -7,6 +7,7 @@ from jarvis.services import routine
 from mem0 import Memory
 
 # --- INITIALIZE MEM0 ---
+# --- INITIALIZE MEM0 ---
 mem0_config = {
     "vector_store": {
         "provider": "chroma",
@@ -18,7 +19,9 @@ mem0_config = {
     "llm": {
         "provider": "litellm",
         "config": {
-            "model": "gemini/gemini-2.5-flash",
+            # Wir nutzen hier gemini-2.5-pro für Mem0s interne Logik, um 
+            # den "Error finding id" (Halluzinieren bei Flash) zu beheben!
+            "model": "gemini/gemini-2.5-pro",
             "temperature": 0.1,
             "max_tokens": 8000,
         }
@@ -38,56 +41,47 @@ except Exception as e:
     memory_client = None
 
 # --- HYBRID RETRIEVAL ---
-def get_hybrid_context(query_text):
+def get_hybrid_context(query_text=None):
     """
-    Combines:
-    1. CORE MEMORY (The 'BIOS' from core.md)
-    2. RELEVANT RECALL (Mem0 Vector DB)
+    Rückgabe von Core Memory & Routines für den System Prompt.
+    Episodic Memory (Archiv) wird NICHT mehr automatisch geladen.
     """
-    # 1. Load Core Memory (Always prioritized)
+    if memory_client is None:
+        return "Memory offline."
+
     core_content = ""
-    if os.path.exists(config.CORE_FILE):
-        with open(config.CORE_FILE, 'r', encoding='utf-8') as f:
-            core_content = f.read()
-
-    # 2. Vector Search (Mem0)
-    rag_content = "No specific past details found."
-    
-    if query_text and memory_client is not None:
-        try:
-            # Mem0 search returns a list of dictionaries with 'memory', 'score', etc.
-            # `memory_client.search()` can sometimes return a dictionary with a 'results' key or direct list.
-            results = memory_client.search(query=query_text, user_id="paul", limit=10)
-            if isinstance(results, dict) and 'results' in results:
-                results_list = results['results']
-            elif isinstance(results, dict) and 'memories' in results:
-                results_list = results['memories']
-            else:
-                results_list = results
-                
-            hits = []
-            for res in results_list:
-                # Handle cases where res is a dict or an object
-                if isinstance(res, dict):
-                    memory_text = res.get('memory', '')
-                else:
-                    memory_text = getattr(res, 'memory', '')
-
-                if memory_text:
-                    hits.append(f"- {memory_text[:300]}")
+    try:
+        # Hole alle Core-Fakten aus Mem0
+        results = memory_client.get_all(user_id="paul_core")
+        
+        # Formatierung der Ergebnisse
+        if isinstance(results, dict) and 'results' in results:
+            results_list = results['results']
+        elif isinstance(results, dict) and 'memories' in results:
+            results_list = results['memories']
+        else:
+            results_list = results
             
-            if hits:
-                rag_content = "\n".join(hits)
-        except Exception as e:
-            print(f" [Memory] Search Error: {e}")
+        facts = []
+        for res in results_list:
+            if isinstance(res, dict):
+                memory_text = res.get('memory', '')
+            else:
+                memory_text = getattr(res, 'memory', '')
+            if memory_text:
+                facts.append(f"- {memory_text}")
+                
+        if facts:
+            core_content = "\n".join(facts)
+        else:
+            core_content = "Bisher keine Core-Fakten gespeichert."
+    except Exception as e:
+        print(f" [Memory] Core Fetch Error: {e}")
+        core_content = "Fehler beim Laden der Core-Fakten."
 
-    # 3. Format for the System Prompt
     return f"""
-    === CORE MEMORY (ESTABLISHED FACTS) ===
+    === CORE MEMORY & ROUTINES (ESTABLISHED FACTS) ===
     {core_content}
-
-    === RELEVANT CONVERSATION HISTORY ===
-    {rag_content}
     """
 
 # --- SAVING & DREAMING ---
@@ -95,32 +89,49 @@ def _async_add_memory(messages):
     """Background task to add memories to Mem0 without blocking the LLM."""
     if memory_client is None: return
     try:
-        memory_client.add(messages, user_id="paul")
+        memory_client.add(messages, user_id="paul_archive")
     except Exception as e:
         print(f" [Memory] Async Add Error: {e}")
 
 def save_interaction(user_text, assistant_text):
     """
-    Saves the turn to Mem0 in real-time. Replaces old numpy+episodic logic.
+    Saves the turn to Mem0 in real-time into the archive.
+    Prepends exact timestamps so semantic search can find time-based queries.
     """
+    from datetime import datetime
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
     messages = [
-        {"role": "user", "content": user_text},
-        {"role": "assistant", "content": assistant_text}
+        {"role": "user", "content": f"[{now_str}] {user_text}"},
+        {"role": "assistant", "content": f"[{now_str}] {assistant_text}"}
     ]
     # Fire and forget in a background thread to prevent latency
     threading.Thread(target=_async_add_memory, args=(messages,), daemon=True).start()
 
 def dream():
     """
-    Called nightly. The LLM rewriting logic is removed because Mem0 handles 
-    granular updates dynamically. We only keep routine analysis here.
+    Called nightly.
+    Analysiert den Tag via Routine Tracker und pusht die Erkenntnisse
+    als Fakten/Gewohnheiten in das Mem0 "paul_core" Profil.
+    Mem0 kümmert sich intern um das Update/Replacement älterer Gewohnheiten.
     """
     print(" [Memory] 🌙 Nightly Maintenance...")
     
     # Analyze Daily Routine
-    print(" [Memory] 🕵️ Analyzing Daily Routine...")
+    print(" [Memory] 🕵️ Analyzing Daily Routine & Habits...")
     try:
         routine.tracker.analyze_routine()
+        
+        # Die generierten Erkenntnisse des Tages holen
+        habits_summary = routine.tracker.get_habits_summary()
+        
+        if memory_client is not None and habits_summary:
+            print(" [Memory] 🧠 Aktualisiere paul_core mit neuen Routinen...")
+            # Mem0 nutzt LLMs im Hintergrund, um zu entscheiden, 
+            # ob alte Gewohnheiten überschrieben oder neue hinzugefügt werden.
+            memory_client.add(f"Aktuelle Routinen und Gewohnheiten: {habits_summary}", user_id="paul_core")
+            print(" [Memory] ✅ Core Memory erfolgreich aktualisiert.")
+            
     except Exception as e:
         print(f" [Memory] Routine Analysis Error: {e}")
 
@@ -128,29 +139,34 @@ def dream():
 
 def save_memory_tool(text):
     """
-    Speichert einen expliziten Fakt (via Tool-Call) ins Archiv.
+    Speichert einen expliziten Fakt (via Tool-Call) ins Archiv UND in die Core-Memories.
+    Wichtig für Dinge, die Paul in der Zukunft dauerhaft wissen soll.
     """
     if memory_client is None:
         return "Fehler: Mem0 nicht initialisiert."
     
     try:
-        # Synchrone Speicherung für explizite Tools (damit es sofort genutzt werden kann)
-        memory_client.add(text, user_id="paul")
-        return f"Notiert: '{text}'."
+        # Synchrone Speicherung in die Core Memories
+        memory_client.add(text, user_id="paul_core")
+        return f"Wichtiger Fakt notiert: '{text}'."
     except Exception as e:
+        # Mem0 Bug workaround: If model hallucinates an ID, catch it gracefully
+        print(f" [Memory] Mem0 Add Error: {e}")
+        if "Error finding id" in str(e):
+            return f"Fehler beim Strukturieren (bekannter Bug), aber versuche es später beim Nightly Dream nochmal: {e}"
         return f"Fehler beim Speichern: {e}"
 
 def search_memory_tool(search_query):
     """
-    Erlaubt dem Agenten, manuell im Archiv zu suchen, falls
-    der initiale Kontext nicht gereicht hat.
+    Durchsucht das Archiv (paul_archive). Nutzt semantische Textsuche, die auch 
+    die angehängten Zeitstempel im Text findet.
     """
     if memory_client is None:
         return "Fehler: Mem0 nicht initialisiert."
     
     hits = []
     try:
-        results = memory_client.search(query=search_query, user_id="paul", limit=10)
+        results = memory_client.search(query=search_query, user_id="paul_archive", limit=10)
         if isinstance(results, dict) and 'results' in results:
             results_list = results['results']
         elif isinstance(results, dict) and 'memories' in results:

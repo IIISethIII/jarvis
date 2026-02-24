@@ -122,12 +122,13 @@ SYSTEM_PROMPT_TEMPLATE = """
       - Es liegt fast NIEMALS am Datum (vertraue dem simulierten Datum!).
       - Wenn 404 kommt: Analysiere, ob du die ID nur geraten hast. Wenn ja -> Suche die richtige ID in der Doku.
 
-    REGELN FÜR DAS GEDÄCHTNIS (CORE & CONTEXT):
-    - Du erhältst dein Wissen über den User direkt im Prompt unter den Sektionen "=== CORE MEMORY ===" (Fakten) und "=== RELEVANT CONVERSATION HISTORY ===".
-    - WICHTIG: Das "CORE MEMORY" ist deine absolute Wahrheit. Nutze diese Infos direkt, ohne Tools aufzurufen.
-    - Nutze das Tool 'retrieve_memory' NUR, wenn du spezifische Details aus der fernen Vergangenheit suchst, die NICHT im Kontext stehen (z.B. "Was habe ich vor 3 Wochen gegessen?").
-    - SPEICHERN: Nutze das Tool 'save_memory' AUSSCHLIESSLICH, wenn der User dich explizit dazu auffordert (z.B. "Merk dir den Türcode", "Speichere, dass ich X mag").
-    - Du musst NICHT proaktiv Alltagsdinge speichern (z.B. "Ich gehe jetzt klettern"). Das System loggt und verarbeitet diese Dinge automatisch in Echtzeit im Hintergrund. Konzentriere dich auf das Gespräch.
+    REGELN FÜR DAS GEDÄCHTNIS (CORE & ARCHIV):
+    - Du erhältst dein Wissen über den User (Identität, Fakten, Vorlieben, Routinen) direkt im Prompt unter der Sektion "=== CORE MEMORY & ROUTINES ===".
+    - WICHTIG: Das "CORE MEMORY & ROUTINES" ist deine absolute Wahrheit. Nutze diese Infos direkt, ohne Tools aufzurufen.
+    - SPEICHERN: Nutze das Tool 'save_memory' um Fakten zu speichern oder wenn der User dich dazu auffordert (z.B. "Merk dir dauerhaft den Türcode", "Speichere, dass ich X mag"). Dies speichert Fakten in dein Core Memory.
+    - ARCHIV-SUCHE (WICHTIG): Vergangene chronologische Konversationen stehen NICHT mehr im Prompt. Alle Chat-Logs werden automatisch im Hintergrund archiviert und mit Zeitstempeln versehen (z.B. "[2026-02-24 14:00]").
+    - Wenn der User sich auf etwas Vergangenes bezieht ("Was haben wir gestern besprochen?", "Wie hieß noch gleich...", "Was gab es heute zum Frühstück?"), MUSST du proaktiv und VOR DEINER ANTWORT das Tool 'search_memory_tool' nutzen.
+    - Übergib ans 'search_memory_tool' passende Suchbegriffe (z.B. "Frühstück gestern" oder konkrete Daten). Das Archiv findet die passenden Timestamps. Rate niemals, was in der Vergangenheit passiert ist, suche es!
 """
 
 def trim_history():
@@ -229,20 +230,9 @@ def trim_history():
     CONVERSATION_HISTORY = deque(final_history)
 
 def _strip_thought_signature(parts):
-    """
-    Gemini may return a huge `thoughtSignature` field (metadata). It is not needed
-    for our agent loop and only bloats the next request payload, so we drop it
-    before storing/resending history.
-    """
-    if not isinstance(parts, list):
-        return parts
-    cleaned = []
-    for p in parts:
-        if isinstance(p, dict) and "thoughtSignature" in p:
-            p = dict(p)
-            p.pop("thoughtSignature", None)
-        cleaned.append(p)
-    return cleaned
+    # Google Gemini 3 models REQUIRE the thought_signature to be passed back in function calls.
+    # We no longer strip it.
+    return parts
 
 def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
     from jarvis.config import DIM_PURPLE 
@@ -420,11 +410,11 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
                 cost_eur = cost_usd * 0.95 # Rough USD to EUR conversion
                 
                 # Log only the FINAL request payload that produced the user-visible answer
-                try:
-                    print("\n[Slow Brain] Final Gemini request payload:")
-                    print(json.dumps(payload, indent=2, ensure_ascii=False))
-                except Exception as log_err:
-                    print(f"[LLM] Could not log Gemini payload: {log_err}")
+                #try:
+                #    print("\n[Slow Brain] Final Gemini request payload:")
+                #    print(json.dumps(payload, indent=2, ensure_ascii=False))
+                #except Exception as log_err:
+                #    print(f"[LLM] Could not log Gemini payload: {log_err}")
 
                 print(f"💰 KOSTEN CHECK (Schritte: {step_count+1}), Kosten: ~{cost_eur:.6f} €")
 

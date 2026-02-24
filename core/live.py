@@ -79,17 +79,15 @@ def build_live_api_tools():
 
 live_api_tools = build_live_api_tools()
 
-def get_dynamic_system_instruction():
-    # Load Core Memory directly (we don't need the RAG part here because there is no search query yet)
+def get_dynamic_system_instruction(time_since_last_activity):
+    # Load Core Memory & Routines from Mem0 via memory service
     core_content = ""
     try:
-        import os
-        from jarvis import config
-        if os.path.exists(config.CORE_FILE):
-            with open(config.CORE_FILE, 'r', encoding='utf-8') as f:
-                core_content = f.read()
+        from jarvis.services import memory
+        # get_hybrid_context now returns precisely the formatted paul_core strings
+        core_content = memory.get_hybrid_context(None)
     except Exception as e:
-        print(f" [Fast Brain] Could not load Core Memory: {e}")
+        print(f" [Fast Brain] Could not load Core Memory from Mem0: {e}")
 
     if getattr(state, 'HA_CONTEXT', None):
         device_lines = []
@@ -113,7 +111,35 @@ Antworte immer in der Sprache des Nutzers (meistens Deutsch). Antworte als Peer,
 
 === VERFÜGBARE GERÄTE (STATE) ===
 {device_list_str}
+'''
 
+    # --- Fast Brain Short-Term Memory Injection ---
+    # We only inject history if the last interaction was within 15 minutes.
+    if time_since_last_activity <= 900 and getattr(state, 'CONVERSATION_HISTORY', None):
+        history_lines = []
+        # Take the last 6 turns (approx 3 user/assistant pairs) to avoid huge prompts
+        import itertools
+        # Safely slice the deque
+        recent_history = list(itertools.islice(state.CONVERSATION_HISTORY, max(0, len(state.CONVERSATION_HISTORY) - 6), len(state.CONVERSATION_HISTORY)))
+        for turn in recent_history:
+            role = "Jarvis" if turn.get("role") == "model" else "Paul"
+            # Attempt to extract text content, fallback to str representation
+            parts = turn.get("parts", [])
+            if isinstance(parts, list) and len(parts) > 0:
+                try:
+                    content = parts[0].get("text", str(parts[0]))
+                except AttributeError:
+                     content = str(parts[0])
+            else:
+                 content = str(parts)
+            history_lines.append(f"{role}: {content}")
+            
+        if history_lines:
+            text += "\n=== RECENT CONVERSATION (LETZTE 15 MIN) ===\n"
+            text += "(Beziehe dich darauf, falls der User etwas aus dem direkten Kontext fragt)\n"
+            text += "\n".join(history_lines) + "\n"
+
+    text += '''
 === CRITICAL RULES (FAST BRAIN VS SLOW BRAIN) ===
 Du bist für EINFACHE, SOFORTIGE Aktionen zuständig.
 1. FAST BRAIN AUFGABEN:
@@ -163,10 +189,13 @@ class JarvisHybridRouter:
         )
         
         self.should_close = False
+        self.close_after_turn = False
+        self._current_user_transcript = []
+        self._waiting_for_tts_completion = False
         # Maximum idle time (in seconds) for a Live API Fast Brain session.
         # If there is no interaction between user and model (no audio sent, no
         # server responses) for this duration, the session is auto-closed.
-        self.session_timeout_seconds = 15   
+        self.session_timeout_seconds = 7   
 
     async def _handle_local_tool(self, session, tool_call):
         """Executes a simple HA tool directly and returns the response to the Live API immediately."""
@@ -209,8 +238,8 @@ class JarvisHybridRouter:
             if active_task and not active_task.done():
                 print(" [Fast Brain] Handed local result back to Fast Brain. Backend task is active, keeping session open.")
             else:
-                print(" [Fast Brain] Handed local result back to Fast Brain. Terminating session.")
-                self.should_close = True
+                print(" [Fast Brain] Handed local result back to Fast Brain. Awaiting TTS response.")
+                self._waiting_for_tts_completion = True
                 self._active_backend_task = None
         except Exception as e:
             print(f"[Router Error] Could not execute local tool: {e}")
@@ -256,7 +285,7 @@ class JarvisHybridRouter:
             )
             
             if "<SESSION:CLOSE>" in response_text:
-                 self.should_close = True
+                 self.close_after_turn = True
             
             # Save final interactions
             clean_resp = response_text.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
@@ -281,6 +310,7 @@ class JarvisHybridRouter:
             # Set to Active (Blue) before sending the TTS payload back
             self.leds.update(Color.BLUE)
             
+            self._waiting_for_tts_completion = True
             await session.send_tool_response(function_responses=[function_response])
             print(" [Slow Brain] Handed result back to Fast Brain.")
              
@@ -311,23 +341,44 @@ class JarvisHybridRouter:
                     except queue.Empty:
                         break
                 
-                if self.should_close or self.is_playing_audio or (time.time() - self.last_audio_end_time < 0.4):
-                    # Clear the queue but DO NOT send to live API (Mute mic while TTS plays/closing to prevent echo loops)
+                if self.should_close:
+                    # Session closing, clear queue
                     continue
                 
                 if chunks:
                     pcm_data = b''.join(chunks)
+                    
+                    # If we're currently playing audio from the model, or if we just finished within the last 0.6 seconds, duck the mic input to prevent feedback loops and overwhelming the user with loud audio.
+                    if self.is_playing_audio or (time.time() - self.last_audio_end_time < 0.6):
+                        try:
+                            import audioop
+                            # Dämpfe das Signal auf 10% 
+                            pcm_data = audioop.mul(pcm_data, 2, 0.1)
+                            # print(f" [Fast Brain] Mic Ducked ({len(pcm_data)} bytes)", flush=True)
+                        except Exception as e:
+                            print(f"[Fast Brain] Ducking failed: {e}")
+                            
                     # print(f" [Fast Brain] Sent {len(pcm_data)} bytes of audio", flush=True)
                     # For Python SDK we must send exactly types.Blob directly rather than JSON dicts
                     try:
                         await session.send_realtime_input(audio=types.Blob(data=pcm_data, mime_type=f"audio/pcm;rate={config.RATE}"))
                     except Exception as e:
-                        print(f" [Fast Brain] Error sending audio chunk: {e}", flush=True)
+                        if e.__class__.__name__ == 'APIError' and '1000' in str(e):
+                            pass
+                        elif e.__class__.__name__ == 'ConnectionClosedOK':
+                            pass
+                        else:
+                            print(f" [Fast Brain] Error sending audio chunk: {e}", flush=True)
         except asyncio.CancelledError:
             print(" [Fast Brain] Mic Send Loop Cancelled", flush=True)
         except Exception as e:
-            print(f" [Fast Brain] Mic Send Loop Error: {e}", flush=True)
-            traceback.print_exc()
+            if e.__class__.__name__ == 'APIError' and '1000' in str(e):
+                pass
+            elif e.__class__.__name__ == 'ConnectionClosedOK':
+                pass
+            else:
+                print(f" [Fast Brain] Mic Send Loop Error: {e}", flush=True)
+                traceback.print_exc()
 
     async def _receive_loop(self, session):
         """Listens for AI server events (audio, tool calls, interruptions)."""
@@ -379,9 +430,22 @@ class JarvisHybridRouter:
                             self._active_backend_task = None
                         continue
                     
-                    # Play audio bytes received from the model TTS
+                    # 1. Capture user's input transcription if available
+                    if hasattr(server_content, "input_transcription") and server_content.input_transcription:
+                        if server_content.input_transcription.text:
+                            # We might get partial transcripts, we append them locally and dump them on model_turn
+                            if not hasattr(self, "_current_user_transcript"):
+                                self._current_user_transcript = []
+                            self._current_user_transcript.append(server_content.input_transcription.text)
+
+                    # 2. Extract text content from the model to build conversation history
                     if server_content.model_turn:
+                        self._waiting_for_tts_completion = False
+                        model_text_parts = []
                         for part in server_content.model_turn.parts:
+                            if part.text:
+                                model_text_parts.append(part.text)
+                            # Play audio bytes received from the model TTS
                             # Use isinstance for bytes check as per newer docs
                             if part.inline_data and isinstance(part.inline_data.data, bytes):
                                 self.is_playing_audio = True
@@ -390,11 +454,27 @@ class JarvisHybridRouter:
                                 finally:
                                     self.is_playing_audio = False
                                     self.last_audio_end_time = time.time()
+                                    
+                        # Append the Fast Brain's response to the global history
+                        if model_text_parts:
+                            full_text = "".join(model_text_parts)
+                            user_text = "[Spracheingabe]"
+                            # If we captured actual transcriptions, use them instead of the placeholder
+                            if hasattr(self, "_current_user_transcript") and self._current_user_transcript:
+                                user_text = " ".join(self._current_user_transcript).strip()
+                                self._current_user_transcript = [] # reset for next turn
+                                
+                            with state.HISTORY_LOCK:
+                                state.CONVERSATION_HISTORY.append({"role": "user", "parts": [{"text": user_text}]})
+                                state.CONVERSATION_HISTORY.append({"role": "model", "parts": [{"text": full_text}]})
 
                     # Check if turn is complete AND backend requested session close
-                    if server_content.turn_complete and self.should_close:
-                         print(" [Fast Brain] Turn complete and Backend closed session. Disconnecting.")
-                         return # Exit loop
+                    if server_content.turn_complete:
+                        self._waiting_for_tts_completion = False
+                        if self.should_close or self.close_after_turn:
+                            print(" [Fast Brain] Turn complete and Backend closed session. Disconnecting.")
+                            self.should_close = True
+                            return # Exit loop
                 
                 # If we broke out cleanly, check should_close
                 if self.should_close:
@@ -404,8 +484,13 @@ class JarvisHybridRouter:
         except asyncio.CancelledError:
             print(" [Fast Brain] Receive Loop Cancelled")
         except Exception as e:
-            print(f" [Fast Brain] Receive Loop Error: {e}")
-            traceback.print_exc()
+            if e.__class__.__name__ == 'APIError' and '1000' in str(e):
+                pass
+            elif e.__class__.__name__ == 'ConnectionClosedOK':
+                pass
+            else:
+                print(f" [Fast Brain] Receive Loop Error: {e}")
+                traceback.print_exc()
 
     async def _session_timeout_watchdog(self, session):
         """Automatically closes the Live API session after a period of *inactivity*.
@@ -427,6 +512,11 @@ class JarvisHybridRouter:
                 # session as "active" regardless of mic/model activity so the
                 # connection never times out while reasoning is in progress.
                 if self._active_backend_task and not self._active_backend_task.done():
+                    self.last_activity_time = time.time()
+                    continue
+
+                if self._waiting_for_tts_completion:
+                    self.last_activity_time = time.time()
                     continue
 
                 idle_for = time.time() - self.last_activity_time
@@ -449,6 +539,11 @@ class JarvisHybridRouter:
     async def start_session(self):
         """Establishes the Live API session upon wake word detection."""
         self.should_close = False
+        self.close_after_turn = False
+        
+        # Calculate time since last interaction
+        time_since_last_activity = time.time() - self.last_activity_time
+        
         # Reset Live API token accounting for this session.
         self.live_input_tokens = 0
         self.live_output_tokens = 0
@@ -458,25 +553,49 @@ class JarvisHybridRouter:
         print("💡 LED: SOLID BLUE (Connecting to Live API...)", flush=True)
         self.leds.update(Color.BLUE)
         
-        c = types.LiveConnectConfig(
-             response_modalities=["AUDIO"],
-             enable_affective_dialog=True,
-             thinking_config=types.ThinkingConfig(thinking_budget=-1, include_thoughts=True),
-             system_instruction=get_dynamic_system_instruction(),
-             tools=[live_api_tools],
-             speech_config=types.SpeechConfig(
-                 voice_config=types.VoiceConfig(
-                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                         voice_name="Puck" # Options: Puck, Charon, Kore, Fenrir, Aoede
-                     )
-                 )
-             )
-        )
+        # Requesting transcripts in the Live API config using **kwargs since Pydantic types can be strict
+        # The prompt instructed to pass dicts directly to config.
+        # However, the SDK uses types.LiveConnectConfig, which might not explicitly accept these as kwargs.
+        # Let's pass them dynamically to avoid validation errors if they are new in the API.
+        live_config_args = {
+            "response_modalities": ["AUDIO"],
+            "enable_affective_dialog": True,
+            "thinking_config": types.ThinkingConfig(thinking_budget=-1, include_thoughts=True),
+            "system_instruction": get_dynamic_system_instruction(time_since_last_activity),
+            "tools": [live_api_tools],
+            "speech_config": types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                        voice_name="Puck"
+                    )
+                )
+            )
+        }
+        
+        c = types.LiveConnectConfig(**live_config_args)
+        
+        # According to the Google docs, we can pass the config as a raw dict to avoid Pydantic issues
+        raw_config = {
+            "response_modalities": ["AUDIO"],
+            "input_audio_transcription": {},
+            "output_audio_transcription": {},
+        }
+        # merge the schema generated by the SDK with the raw dictionary fields we need just in case
+        try:
+             import json
+             dumped = c.model_dump(exclude_none=True)
+             dumped.update(raw_config)
+             final_config = dumped
+        except Exception:
+             final_config = c # fallback if model_dump fails
+             
+        # Initialize an empty array to accumulate user transcript strings for this session
+        self._current_user_transcript = []
         
         try:
             async with self.client.aio.live.connect(
                 model="gemini-2.5-flash-native-audio-preview-12-2025", 
-                config=c
+                config=final_config
             ) as session:
                 print("✅ Live API Connected. Fast Brain Listening...", flush=True)
                 
