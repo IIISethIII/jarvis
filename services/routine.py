@@ -330,7 +330,7 @@ class RoutineTracker:
         {{
             "observations": [
                 "Am 22.02. verbrachte der User die meiste Zeit Zuhause und verließ erst gegen 16:30 Uhr das Haus, um für 45 Minuten zu Rewe zu gehen.",
-                "Abends war der User ab 19:00 Uhr wieder Zuhause, wobei Aktivitäten bis ca. 23:45 Uhr festgestellt wurden."
+                "Abends war der User ab 19:00 Uhr wieder Zuhause, wobei Aktivitäten bis ca. 23:45 Uhr festgestellt wurden. Er hat vielleicht gekocht"
             ]
         }}
         """
