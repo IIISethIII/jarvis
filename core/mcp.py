@@ -101,42 +101,59 @@ class MCPManager:
             else: new_d[k] = v
         return new_d
 
-    async def _execute_async(self, gemini_name, args):
+    async def _execute_async(self, gemini_name, args, max_retries=3):
         info = self.mcp_tools_cache.get(gemini_name)
         if not info: return "Tool nicht gefunden."
         
         server_name, original_name = info
-        session = self.sessions.get(server_name)
-        
-        if not session:
-            return f"Fehler: MCP Server '{server_name}' ist offline (Reconnect läuft...)"
 
-        try:
-            result = await asyncio.wait_for(
-                session.call_tool(original_name, arguments=args),
-                timeout=60.0 
-            )
+        for attempt in range(max_retries):
+            session = self.sessions.get(server_name)
             
-            if hasattr(result, 'isError') and result.isError:
-                error_msg = "\n".join([b.text for b in result.content if getattr(b, 'type', '') == 'text'])
-                return f"Tool Fehler: {error_msg}"
+            if not session:
+                if attempt < max_retries - 1:
+                    print(f"  [MCP] {server_name} offline. Warte auf Reconnect ({attempt + 1}/{max_retries})...")
+                    await asyncio.sleep(3)
+                    continue
+                return f"Fehler: MCP Server '{server_name}' ist offline (Reconnect läuft...)"
 
-            if result.content:
-                return "\n".join([block.text for block in result.content if getattr(block, 'type', '') == 'text'])
-            return "Ausgeführt."
+            try:
+                result = await asyncio.wait_for(
+                    session.call_tool(original_name, arguments=args),
+                    timeout=60.0 
+                )
+                
+                if hasattr(result, 'isError') and result.isError:
+                    error_msg = "\n".join([b.text for b in result.content if getattr(b, 'type', '') == 'text'])
+                    return f"Tool Fehler: {error_msg}"
 
-        except asyncio.TimeoutError:
-            return f"Fehler: Das Tool '{gemini_name}' hat das Zeitlimit überschritten."
-        except Exception as e:
-            error_msg = repr(e) 
-            if any(msg.lower() in error_msg.lower() for msg in ["timeout", "closed", "connection", "connecterror", "readtimeout"]):
-                print(f"  [MCP] Verbindung zu {server_name} instabil. Forciere Neustart des Tasks.")
-                # Killt den aktiven Task sauber (was den Scope korrekt schließt) und spawnt ihn neu
-                task = self.server_tasks.get(server_name)
-                if task:
-                    task.cancel()
-                self.server_tasks[server_name] = self.loop.create_task(self._server_loop(server_name))
-            return f"MCP Fehler: {error_msg}"
+                if result.content:
+                    return "\n".join([block.text for block in result.content if getattr(block, 'type', '') == 'text'])
+                return "Ausgeführt."
+
+            except asyncio.TimeoutError:
+                if attempt < max_retries - 1:
+                    print(f"  [MCP] Timeout bei {gemini_name}. Versuche erneut...")
+                    await asyncio.sleep(2)
+                    continue
+                return f"Fehler: Das Tool '{gemini_name}' hat das Zeitlimit überschritten."
+            except Exception as e:
+                error_msg = repr(e) 
+                if any(msg.lower() in error_msg.lower() for msg in ["timeout", "closed", "connection", "connecterror", "readtimeout"]):
+                    print(f"  [MCP] Verbindung zu {server_name} instabil. Forciere Neustart des Tasks.")
+                    # Killt den aktiven Task sauber (was den Scope korrekt schließt) und spawnt ihn neu
+                    task = self.server_tasks.get(server_name)
+                    if task:
+                        task.cancel()
+                    self.server_tasks[server_name] = self.loop.create_task(self._server_loop(server_name))
+                    
+                    if attempt < max_retries - 1:
+                        print(f"  [MCP] Warte auf Task-Neustart für {server_name} ({attempt + 1}/{max_retries})...")
+                        await asyncio.sleep(3)
+                        continue
+                return f"MCP Fehler: {error_msg}"
+                
+        return "MCP Fehler: Maximale Anzahl an Versuchen erreicht."
 
     def execute_sync(self, gemini_name, args):
         return asyncio.run_coroutine_threadsafe(self._execute_async(gemini_name, args), self.loop).result()
