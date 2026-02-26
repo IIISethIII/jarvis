@@ -55,6 +55,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SOUNDS_DIR = os.path.join(BASE_DIR, "assets/sounds") # you may need to adjust this path
 
 SOUND_WAKE = os.path.join(SOUNDS_DIR, "navigation_forward-selection.ogg")
+SOUND_SLEEP = os.path.join(SOUNDS_DIR, "state-change_confirm-down.ogg")
 SOUND_THINKING = os.path.join(SOUNDS_DIR, "ui_loading.ogg")
 SOUND_SUCCESS = os.path.join(SOUNDS_DIR, "state-change_confirm-up.ogg")
 SOUND_ERROR = os.path.join(SOUNDS_DIR, "alert_error-03.ogg")

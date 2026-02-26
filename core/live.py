@@ -10,8 +10,9 @@ from google.genai import types
 from jarvis import config, state
 from jarvis.core import llm
 from jarvis.services import memory
-from aiy.leds import Color
+from aiy.leds import Color, Pattern
 from jarvis.core.tools import execute_tool, FUNCTION_DECLARATIONS
+from jarvis.services import sfx
 
 # Rough pricing for Gemini 2.5 Flash Live (Fast Brain), as of Feb 2026 (USD)
 # Uses the same token pricing as standard Gemini 2.5 Flash.
@@ -155,7 +156,8 @@ Du bist für EINFACHE, SOFORTIGE Aktionen zuständig.
    - In diesen Fällen rufst du ZWINGEND "delegate_to_backend" auf. Versuche NIEMALS komplexe Routinen selbst auszuführen!
 3. KOMMUNIKATION:
    - Nach erfolgreichem Toolaufruf antworte ultrakurz (z.B. "Ok", "Erledigt", "Licht ist an").
-   - Wenn "delegate_to_backend" antwortet, lies die exakte Antwort flüssig vor, füge KEINE Floskeln hinzu.'''
+   - Wenn "delegate_to_backend" antwortet, lies die exakte Antwort flüssig vor, füge KEINE Floskeln hinzu.
+   - Nutze das Tool "end_conversation", wenn die Konversation beendet werden soll, z.B. wenn der User "Danke.", "Stop!", "Das wars." sagt.
 
     return types.Content(role="system", parts=[types.Part.from_text(text=text)])
 
@@ -169,6 +171,7 @@ class JarvisHybridRouter:
         # Tracks the last time there was any interaction on the Live websocket
         # (user audio sent OR model/tool response received). Used for idle timeout.
         self.last_activity_time = time.time()
+        self.is_thinking = False
 
         # Accumulated token usage for the Live API (Fast Brain) session.
         self.live_input_tokens = 0
@@ -195,7 +198,7 @@ class JarvisHybridRouter:
         # Maximum idle time (in seconds) for a Live API Fast Brain session.
         # If there is no interaction between user and model (no audio sent, no
         # server responses) for this duration, the session is auto-closed.
-        self.session_timeout_seconds = 7   
+        self.session_timeout_seconds = 15   
 
     async def _handle_local_tool(self, session, tool_call):
         """Executes a simple HA tool directly and returns the response to the Live API immediately."""
@@ -268,6 +271,9 @@ class JarvisHybridRouter:
             
             # Show "thinking" color
             self.leds.update(self.leds.rgb_pattern(config.DIM_PURPLE))
+
+            self.is_thinking = True
+            sfx.play_loop(config.SOUND_THINKING, volume=1)
             
             # Wrap standard sync logic
             hybrid_context = memory.get_hybrid_context(user_intent)
@@ -417,18 +423,43 @@ class JarvisHybridRouter:
                                 print(f" [Fast Brain] Tool Call: {call.name}", flush=True)
                                 if call.name == "delegate_to_backend":
                                     await self._handle_slow_brain_tool(session, call)
+                                elif call.name == "end_conversation":
+                                    if (self._active_backend_task and not self._active_backend_task.done()) or self._waiting_for_tts_completion or self.is_playing_audio:
+                                        print(" [Fast Brain] Ignoriere end_conversation (Backend läuft oder TTS aktiv).")
+                                        from google.genai import types
+                                        dummy_response = types.FunctionResponse(
+                                            id=call.id, 
+                                            name=call.name, 
+                                            response={"result": "SYSTEM_INSTRUCTION: SILENT_IGNORE"}
+                                        )
+                                        await session.send_tool_response(function_responses=[dummy_response])
+                                    else:
+                                        print(" [Fast Brain] Gemini hat Stille/Ende erkannt. Beende Session.")
+                                        self.close_after_turn = True
+                                        await self._handle_local_tool(session, call)
                                 else:
                                     await self._handle_local_tool(session, call)
                         continue
                     
                     # The Interruption Kill Switch
-                    if server_content.interrupted:
+                    '''if server_content.interrupted:
                         print(" [Fast Brain] 🛑 User Interrupted!")
+
+                        if self.is_thinking:
+                            self.is_thinking = False
+                            sfx.stop_loop()
+
+                        self.is_playing_audio = False
+
+                        sfx.play(config.SOUND_ERROR, volume=1)
+                        self.leds.pattern = None
+                        self.leds.update(Color.BLUE)
+                        
                         if self._active_backend_task and not self._active_backend_task.done():
                             print(" [Fast Brain] Killing Slow Brain task...")
                             self._active_backend_task.cancel()
                             self._active_backend_task = None
-                        continue
+                        continue'''
                     
                     # 1. Capture user's input transcription if available
                     if hasattr(server_content, "input_transcription") and server_content.input_transcription:
@@ -443,16 +474,32 @@ class JarvisHybridRouter:
                         self._waiting_for_tts_completion = False
                         model_text_parts = []
                         for part in server_content.model_turn.parts:
+                            # thought kommen an
                             if part.text:
                                 model_text_parts.append(part.text)
-                            # Play audio bytes received from the model TTS
-                            # Use isinstance for bytes check as per newer docs
+                                # Wenn wir Text bekommen, aber noch kein Audio spielen, 
+                                # fängt Jarvis gerade an nachzudenken.
+                                if not self.is_thinking and not self.is_playing_audio:
+                                    self.is_thinking = True
+                                    sfx.play_loop(config.SOUND_THINKING, volume=1)
+                                    self.leds.pattern = Pattern.breathe(1500)
+                                    self.leds.update(self.leds.rgb_pattern((100, 0, 255)))
+
+                            # --- NEU: AUDIO KOMMT AN ---
                             if part.inline_data and isinstance(part.inline_data.data, bytes):
-                                self.is_playing_audio = True
+                                # Sobald das echte Audio kommt, stoppen wir das Nachdenken SOFORT
+                                if self.is_thinking:
+                                    self.is_thinking = False
+                                    sfx.stop_loop()
+
+                                if not self.is_playing_audio:
+                                    self.leds.pattern = None
+                                    self.leds.update(config.DIM_PURPLE)
+                                    self.is_playing_audio = True
+                                    
                                 try:
                                     await loop.run_in_executor(None, self.out_stream.write, part.inline_data.data)
                                 finally:
-                                    self.is_playing_audio = False
                                     self.last_audio_end_time = time.time()
                                     
                         # Append the Fast Brain's response to the global history
@@ -471,6 +518,16 @@ class JarvisHybridRouter:
                     # Check if turn is complete AND backend requested session close
                     if server_content.turn_complete:
                         self._waiting_for_tts_completion = False
+                        
+                        if self.is_thinking and not (self._active_backend_task and not self._active_backend_task.done()):
+                            self.is_thinking = False
+                            sfx.stop_loop()
+
+                        self.is_playing_audio = False
+
+                        self.leds.pattern = None
+                        self.leds.update(Color.BLUE)
+                            
                         if self.should_close or self.close_after_turn:
                             print(" [Fast Brain] Turn complete and Backend closed session. Disconnecting.")
                             self.should_close = True
@@ -519,6 +576,10 @@ class JarvisHybridRouter:
                     self.last_activity_time = time.time()
                     continue
 
+                if self.is_playing_audio:
+                    self.last_activity_time = time.time()
+                    continue
+
                 idle_for = time.time() - self.last_activity_time
                 if idle_for >= self.session_timeout_seconds:
                     print(
@@ -540,6 +601,10 @@ class JarvisHybridRouter:
         """Establishes the Live API session upon wake word detection."""
         self.should_close = False
         self.close_after_turn = False
+
+        self._waiting_for_tts_completion = False
+        self.is_playing_audio = False
+        self.is_thinking = False
         
         # Calculate time since last interaction
         time_since_last_activity = time.time() - self.last_activity_time
@@ -635,6 +700,11 @@ class JarvisHybridRouter:
 
             print("💡 LED: OFF (Disconnected)", flush=True)
             self.leds.update(self.leds.rgb_off())
+            
+            self.is_thinking = False
+            sfx.stop_loop()
+
+            sfx.play(config.SOUND_SLEEP)
             
             if self._active_backend_task and not self._active_backend_task.done():
                 self._active_backend_task.cancel()

@@ -7,6 +7,7 @@ import jarvis.services.sfx as sfx
 import jarvis.services.memory as memory
 import jarvis.services.navigation as navigation
 from jarvis import config
+from jarvis.core.mcp import mcp_client
 
 # 1. Definitions
 FUNCTION_DECLARATIONS = [
@@ -143,39 +144,39 @@ FUNCTION_DECLARATIONS = [
             "required": ["volume_level"]
         }
     },
-    {
-        "name": "perform_google_search",
-        "description": "Suche nach Fakten oder Wissen und allen Informationen die du nicht weißt.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": { "query": { "type": "STRING" } },
-            "required": ["query"]
-        }
-    },
-    {
-        "name": "get_calendar_events",
-        "description": "Liest Termine. Nutze days=0 für 'heute', days=1 für 'heute und morgen', days=7 für 'die Woche'.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "count": { "type": "INTEGER", "description": "Max Anzahl (Default 5)" },
-                "days": { "type": "INTEGER", "description": "0=Heute, 1=Morgen mit dazu, 7=Woche" }
-            }
-        }
-    },
-    {
-        "name": "add_calendar_event",
-        "description": "Erstellt einen Termin. Datum muss ISO sein.",
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {
-                "summary": { "type": "STRING", "description": "Titel" },
-                "start_time_iso": { "type": "STRING", "description": "ISO Format YYYY-MM-DDTHH:MM:SS" },
-                "duration_minutes": { "type": "INTEGER" }
-            },
-            "required": ["summary", "start_time_iso"]
-        }
-    },
+    #{
+    #    "name": "perform_google_search",
+    #    "description": "Suche nach Fakten oder Wissen und allen Informationen die du nicht weißt.",
+    #    "parameters": {
+    #        "type": "OBJECT",
+    #        "properties": { "query": { "type": "STRING" } },
+    #        "required": ["query"]
+    #    }
+    #},
+    # {
+    #    "name": "get_calendar_events",
+    #    "description": "Liest Termine. Nutze days=0 für 'heute', days=1 für 'heute und morgen', days=7 für 'die Woche'.",
+    #    "parameters": {
+    #        "type": "OBJECT",
+    #        "properties": {
+    #            "count": { "type": "INTEGER", "description": "Max Anzahl (Default 5)" },
+    #            "days": { "type": "INTEGER", "description": "0=Heute, 1=Morgen mit dazu, 7=Woche" }
+    #        }
+    #    }
+    #},
+    #{
+    #    "name": "add_calendar_event",
+    #    "description": "Erstellt einen Termin. Datum muss ISO sein.",
+    #    "parameters": {
+    #        "type": "OBJECT",
+    #        "properties": {
+    #            "summary": { "type": "STRING", "description": "Titel" },
+    #            "start_time_iso": { "type": "STRING", "description": "ISO Format YYYY-MM-DDTHH:MM:SS" },
+    #            "duration_minutes": { "type": "INTEGER" }
+    #        },
+    #        "required": ["summary", "start_time_iso"]
+    #    }
+    #},
     {
         "name": "manage_timer_alarm",
         "description": "Setzt einen Timer/Wecker oder löscht ihn.",
@@ -314,7 +315,7 @@ FUNCTION_DECLARATIONS = [
     },
     {
         "name": "end_conversation",
-        "description": "Beendet die aktuelle Konversation. Nutze dies, wenn der User meint, dass er fertig ist (z.B. 'Danke' Das wars', 'Tschüss', 'Machs gut').",
+        "description": "Beendet die aktuelle Konversation. Nutze dies, wenn der User meint, dass er fertig ist (z.B. 'Danke' Das wars', 'Tschüss', 'Machs gut'). Bestätige immer mit einer kurzen Nachricht, dass die Konversation beendet wird. Zum Beispiel: 'Gern geschehen! Ok. Tschau.'",
         "parameters": {
             "type": "OBJECT",
             "properties": {}, 
@@ -353,6 +354,18 @@ TOOL_IMPLEMENTATIONS = {
 def execute_tool(name, args, silent_mode=False):
     """Dispatches the function call to the correct service."""
     print(f"  [DEBUG] Tool Call: {name} | Args: {args}")
+    
+    # 1. NEW: Check if this is a remote MCP tool
+    if name in mcp_client.mcp_tools_cache:
+        try:
+            result = mcp_client.execute_sync(name, args)
+            if not silent_mode:
+                sfx.play(config.SOUND_SUCCESS)
+            print(f"  [DEBUG] MCP Result: {result}")
+            return result
+        except Exception as e:
+            return f"MCP Error executing {name}: {str(e)}"
+
     if name in TOOL_IMPLEMENTATIONS:
         try:
             result = TOOL_IMPLEMENTATIONS[name](**args)
