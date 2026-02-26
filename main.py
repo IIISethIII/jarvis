@@ -13,6 +13,7 @@ import queue
 import pyaudio
 import pvporcupine
 import pvcobra
+import os
 from jarvis.services.hardware import BonnetHardware
 from aiy.leds import Color, Pattern
 # from aiy.leds import leds
@@ -99,7 +100,9 @@ def flush_queue(q):
 def main():
     def handle_sigterm(signum, frame):
         print("Received SIGTERM from systemd. Cleaning up...")
-        sys.exit(0)
+        leds.update(leds.rgb_off())
+        restore_volume()
+        os._exit(0)
 
     signal.signal(signal.SIGTERM, handle_sigterm)
 
@@ -213,7 +216,20 @@ def main():
             except:
                 pass
             return False
+
+        from jarvis.core.mcp import mcp_client
+        from jarvis.core.tools import FUNCTION_DECLARATIONS
+
+        try:
+            print("Verbinde mit Octopus MCP Server...")
+            mcp_client.start_sync()
+            dynamic_tools = mcp_client.get_gemini_tools_sync()
+            FUNCTION_DECLARATIONS.extend(dynamic_tools)
+            print(f" [MCP] {len(dynamic_tools)} externe Tools geladen (z.B. {dynamic_tools[0]['name'] if dynamic_tools else 'Keine'})")
+        except Exception as e:
+            print(f" [MCP Error] Konnte nicht verbinden: {e}")
         
+        leds.update(Color.BLUE)
         print(f"\nJarvis Online | Devices: {len(state.AVAILABLE_LIGHTS)}")
         google.speak_text(leds, "Ich bin jetzt online.")
         leds.update(leds.rgb_off())
@@ -404,12 +420,12 @@ def main():
                         except Exception as e:
                             print(f" [Fast Brain Error] {e}")
                         
-                        # Session automatically closes when user finished or timed out.
-                        restore_volume()
-                        flush_queue(audio_queue)
-                        state.SESSION_OPEN_UNTIL = 0
-                        leds.update(leds.rgb_off())
-                        state.IS_PROCESSING = False
+                        finally:
+                            restore_volume()
+                            flush_queue(audio_queue)
+                            state.SESSION_OPEN_UNTIL = 0
+                            leds.update(leds.rgb_off())
+                            state.IS_PROCESSING = False
                     continue
 
                 # --- WAKE WORD ---
@@ -429,6 +445,7 @@ def main():
                         google.speak_text(leds, "Wecker gestoppt.")
                         leds.update(leds.rgb_off())
                         flush_queue(audio_queue) # Auch hier wichtig
+                        restore_volume()
                         continue
                     state.open_session(8)
 

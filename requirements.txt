@@ -9,5 +9,7 @@ chromadb
 mem0ai
 litellm
 google-genai
+mcp
+beautifulsoup4
 /home/pi/aiyprojects
 # Note: 'aiy' package depends on the specific Google AIY hardware/image
