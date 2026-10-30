@@ -30,6 +30,9 @@ Important behaviour:
 
 - Local tools live in `core/tools.py`. Add a `types.FunctionDeclaration` to `FUNCTION_DECLARATIONS`, map the name in `TOOL_IMPLEMENTATIONS`, and add usage rules to the system prompt in `core/llm.py`.
 - Any tool name not in `TOOL_IMPLEMENTATIONS` is routed to MCP (`core/mcp.py`, servers in `core/mcp_config.json`, types `sse` or `stateless`). **Every** MCP tool is sent to every Live session, so keep the tool count in mind.
+  - The tool list is fetched **once at boot**; new tools on a server need a Jarvis restart.
+  - Hide tools per server with an optional blacklist of fnmatch patterns: `"exclude": ["library_delete_*"]`. Default: all tools.
+  - Free-form object parameters (no `properties`, e.g. a gateway's `call_tool` `arguments`) are offered to Gemini as JSON strings and decoded before the call.
 - Local tools run **synchronously inside the async receive loop** and block audio meanwhile. Wrap slow ones (`asyncio.to_thread`).
 - Tool results go back as `{"result": ...}`. Keep them short; they cost tokens and latency.
 
@@ -57,7 +60,7 @@ The list of currently hardcoded items is in FEATURE_BACKLOG.md under "Portabilit
   - To test without speaking: stop the service, run `venv/bin/python main.py --test`, then from a second shell run `venv/bin/python scripts/mock_trigger.py "Mach das Licht an"`. The text is injected into a Live session and the answer is spoken.
 - **Manual test scripts** live in `tests/manual/`. Run them **from the repo root as modules**, e.g. `python -m tests.manual.test_mcp`, so that `core.*` imports resolve.
 - **Off the Pi:** HA, MCP and Gemini text tests work (`tests.manual.test_ha_llm`, `tests.manual.test_mcp`, `core/ha.py`, `core/memory.py`, `core/tools.py`). Anything that touches ALSA or the mic (`main.py`, `core/audio.py`) needs the Pi. `core/hardware.py` falls back to mock LEDs without `smbus2`.
-- There is no automated test suite yet.
+- **Unit tests** live in `tests/unit/` (standard `unittest`, no hardware or network): `python -m unittest discover tests/unit`. `test_prompt_fstrings.py` runs anywhere and catches unknown `{names}` in f-strings like the system prompt; `test_mcp_schema.py` needs the runtime dependencies, so run it on the Pi with `venv/bin/python`.
 - Paths in scripts must be relative to the repo (`os.path.abspath(__file__)`), never `/home/pi/...`.
 - After changing `requirements.txt`, run `venv/bin/pip install -r requirements.txt` on the Pi. It is slow, so batch dependency changes.
 

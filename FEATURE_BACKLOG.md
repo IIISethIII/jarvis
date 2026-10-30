@@ -32,7 +32,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - Fix: In `core/llm.py → _receive_audio_loop` die `input_transcription`- und `output_transcription`-Fragmente pro Turn sammeln und bei `turn_complete` `memory.log_interaction(user, jarvis)` aufrufen. Am besten in einem Thread, damit die Audio-Schleife nicht blockiert.
   - Vorlage: v2 `core/live.py` (Sammeln von `_current_user_transcript`) und v2 `services/memory.py → save_interaction`.
 
-- [ ] **Prompt verweist auf ein Tool, das es nicht gibt.** Der System-Prompt in `core/llm.py` sagt bei „Musik": `category='station', name='Library Radio'`. Ein Tool mit diesen Parametern gibt es in v3 aber nicht (siehe P1 „Musik gezielt abspielen"). Entweder das Tool portieren oder die Prompt-Regel anpassen.
+- [x] **Prompt verweist auf ein Tool, das es nicht gibt.** (2026-10-30: Regel nutzt jetzt `music_play` / `music_control` aus dem Gateway.) Der System-Prompt in `core/llm.py` sagt bei „Musik": `category='station', name='Library Radio'`. Ein Tool mit diesen Parametern gibt es in v3 aber nicht (siehe P1 „Musik gezielt abspielen"). Entweder das Tool portieren oder die Prompt-Regel anpassen.
 
 - [ ] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet. Die Regel in `core/llm.py` (KONVERSATIONSSTEUERUNG) und die Tool-Beschreibung in `core/tools.py` enger fassen: nur bei einem klaren Abschluss, bei unklaren Fragmenten still bleiben. Das Sessionende per Inaktivität reicht sonst.
 
@@ -66,7 +66,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - v2: `services/ha.py → send_notification` (`notify.notify` mit `clickAction`-URL, Bild, Priorität `high` → `channel: alarm_stream`) plus Prompt-Regeln: lange Antworten (Rezepte, Listen, Code), Bilder und Routen **proaktiv** aufs Handy schicken, ohne vorher zu fragen.
   - Theoretisch geht das auch über `call_ha_service`. Ein eigenes Tool mit klaren Parametern ist für das Live-Modell aber deutlich zuverlässiger.
 
-- [ ] **Musik gezielt abspielen (Plex/Plexamp).**
+- [x] **Musik gezielt abspielen (Plex/Plexamp).** Umgesetzt 2026-10-30 im MCP-Gateway (`music_play`, `music_control`): Plex-Suche + Plexamp direkt, Spotify als Fallback, Stationen wie Library Radio, „Spiel Musik" setzt innerhalb von 30 min mit dem nächsten Song fort, sonst Library Radio. Offen für Portabilität: Repo-Nutzer ohne dieses Gateway brauchen eine Alternative (z. B. Music Assistant); die Prompt-Regel gehört später in die Persona-Datei.
   - v2: `services/ha.py → execute_play_music` (Kategorien artist/album/playlist/track/station, `plex://`-Content-IDs, „Library Radio" = feste Station-URL `plex://…/library/sections/6/stations/1`). Ohne Angabe wird automatisch der Plexamp-Player gewählt.
   - Prüfen, was das HiFiBerry-MCP schon abdeckt (`library_*`, `queue_add_track`, `playback_command`). Für „Library Radio" und Playlists braucht man wahrscheinlich weiter den HA-`play_media`-Weg.
 
@@ -145,7 +145,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - **Neues Tool in v3:** `types.FunctionDeclaration` in `core/tools.py → FUNCTION_DECLARATIONS` ergänzen, die Funktion in `TOOL_IMPLEMENTATIONS` eintragen und eine Regel im Prompt in `core/llm.py` hinzufügen.
 - **Lokale Tools blockieren die Audio-Schleife:** `_receive_audio_loop` ruft `tools.execute_tool()` synchron auf. Langsame Tools (HA-Verlauf, Routen, Wetter) besser mit `await asyncio.to_thread(tools.execute_tool, name, args)` ausführen.
 - **RAM ist knapp:** Der Pi Zero 2W hat 463 MB, Jarvis belegt davon schon ~60 % und der Pi swappt. Heute hat er mehrere Minuten nicht auf SSH reagiert und lief danach frisch gebootet. Also keine schweren Libraries wie Mem0, ChromaDB oder LiteLLM zurückholen, sondern Rechenarbeit auf Server/MCP auslagern.
-- **Viele MCP-Tools in jeder Session:** Gateway (32) + Basic Memory (12) + HiFiBerry (30+) + lokale Tools ergeben ~80 Tool-Definitionen pro Live-Session. Das kostet Tokens und Latenz und verschlechtert die Tool-Auswahl. Eine Allow- oder Denylist pro Server in `core/mcp_config.json` lohnt sich. HiFiBerry hat außerdem destruktive Tools (`library_delete_album`, `library_delete_track`), die Gemini besser nicht sehen sollte.
+- **Viele MCP-Tools in jeder Session:** *(2026-10-30: Blacklist pro Server umgesetzt (`"exclude"` in `core/mcp_config.json`), HiFiBerry-MCP entfernt, Gateway zeigt nur Kern-Tools → jetzt 36 Tools.)* Gateway (32) + Basic Memory (12) + HiFiBerry (30+) + lokale Tools ergeben ~80 Tool-Definitionen pro Live-Session. Das kostet Tokens und Latenz und verschlechtert die Tool-Auswahl. Eine Allow- oder Denylist pro Server in `core/mcp_config.json` lohnt sich. HiFiBerry hat außerdem destruktive Tools (`library_delete_album`, `library_delete_track`), die Gemini besser nicht sehen sollte.
 - **Daten aus v2 retten:** Auf dem Pi liegen in `~/jarvis/memories/` (8,2 MB) das Mem0-Archiv aller v2-Gespräche (`paul_archive`), das Tages-Journal (`paul_journal`) sowie `core.md` und `episodic.md`. Das vor dem Löschen von `~/jarvis` sichern und gegebenenfalls nach `archive.jsonl` oder Basic Memory migrieren (`scripts/migration/migrate_memories.py` als Startpunkt).
 
 ---
