@@ -1,4 +1,5 @@
 import asyncio
+import fnmatch
 import threading
 import logging
 from mcp import ClientSession
@@ -67,6 +68,7 @@ class MCPManager:
         
         self.sessions = {}
         self.mcp_tools_cache = {}
+        self.json_params = {}  # gemini tool name -> parameters sent as JSON strings
         self.server_tasks = {}
 
         self.servers = {}
@@ -143,8 +145,12 @@ class MCPManager:
         """Synchronous wrapper to initialize all servers."""
         asyncio.run_coroutine_threadsafe(self._start_async(), self.loop).result()
 
-    def _convert_to_gemini_schema(self, schema_dict):
-        """Converts JSON Schema types to Google GenAI Schema."""
+    def _convert_to_gemini_schema(self, schema_dict, json_params=None):
+        """Converts JSON Schema types to Google GenAI Schema.
+
+        Free-form object parameters (no properties, e.g. call_tool's 'arguments') are offered
+        as JSON strings; their names are added to json_params so _execute_async can decode them.
+        """
         if not isinstance(schema_dict, dict):
             return schema_dict
             
@@ -162,11 +168,22 @@ class MCPManager:
         
         for k, v in schema_dict.get("properties", {}).items():
             if isinstance(v, dict):
-                v_type = v.get("type", "string")
+                v_type = v.get("type")
+                if isinstance(v_type, list):  # e.g. ["string", "null"]
+                    v_type = next((t for t in v_type if t != "null"), None)
+                if not v_type and "anyOf" in v:  # e.g. anyOf: [{type: object}, {type: null}]
+                    v_type = next((s.get("type") for s in v["anyOf"]
+                                   if isinstance(s, dict) and s.get("type") not in (None, "null")), None)
+                v_type = v_type or "string"
+                description = v.get("description")
+                if v_type == "object" and not v.get("properties") and json_params is not None:
+                    json_params.add(k)
+                    v_type = "string"
+                    description = f"{description or k} (JSON object as a string)"
                 prop_schema = {"type": gemini_type_map.get(v_type, types.Type.STRING)}
-                if "description" in v:
-                    prop_schema["description"] = v["description"]
-                
+                if description:
+                    prop_schema["description"] = description
+
                 # Gemini API requires 'items' field if type is ARRAY
                 if v_type == "array":
                     prop_schema["items"] = types.Schema(type=types.Type.STRING)
@@ -183,14 +200,22 @@ class MCPManager:
         """Fetches tools from all active MCP sessions."""
         gemini_tools = []
         for server_name, session in list(self.sessions.items()):
+            # Optional per-server blacklist in mcp_config.json, e.g. "exclude": ["library_delete_*"]
+            exclude = self.servers.get(server_name, {}).get("exclude", [])
             try:
                 response = await session.list_tools()
+                skipped = 0
                 for tool in response.tools:
+                    if any(fnmatch.fnmatchcase(tool.name, pattern) for pattern in exclude):
+                        skipped += 1
+                        continue
                     # Replace hyphens with underscores for Gemini
                     gemini_name = tool.name.replace("-", "_")
-                    self.mcp_tools_cache[gemini_name] = (server_name, tool.name) 
-                    
-                    schema = self._convert_to_gemini_schema(tool.inputSchema)
+                    self.mcp_tools_cache[gemini_name] = (server_name, tool.name)
+
+                    json_params = set()
+                    schema = self._convert_to_gemini_schema(tool.inputSchema, json_params)
+                    self.json_params[gemini_name] = json_params
                     
                     gemini_tools.append(
                         types.FunctionDeclaration(
@@ -199,6 +224,8 @@ class MCPManager:
                             parameters=schema
                         )
                     )
+                if skipped:
+                    print(f"[MCP] {server_name}: {skipped} tool(s) excluded by config.", flush=True)
             except Exception as e:
                 print(f"[MCP Error] Could not list tools for {server_name}: {e}")
         return gemini_tools
@@ -213,6 +240,15 @@ class MCPManager:
             return "Error: Tool not found."
         
         server_name, original_name = info
+
+        # Free-form object parameters arrive as JSON strings (see _convert_to_gemini_schema)
+        args = dict(args or {})
+        for k in self.json_params.get(gemini_name, ()):
+            if isinstance(args.get(k), str):
+                try:
+                    args[k] = json.loads(args[k]) if args[k].strip() else None
+                except json.JSONDecodeError:
+                    return f"Error: parameter '{k}' must be a JSON object."
 
         for attempt in range(max_retries):
             session = self.sessions.get(server_name)
