@@ -137,3 +137,34 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - **RAM ist knapp:** Der Pi Zero 2W hat 463 MB, Jarvis belegt davon schon ~60 % und der Pi swappt. Heute hat er mehrere Minuten nicht auf SSH reagiert und lief danach frisch gebootet. Also keine schweren Libraries wie Mem0, ChromaDB oder LiteLLM zurückholen, sondern Rechenarbeit auf Server/MCP auslagern.
 - **Viele MCP-Tools in jeder Session:** Gateway (32) + Basic Memory (12) + HiFiBerry (30+) + lokale Tools ergeben ~80 Tool-Definitionen pro Live-Session. Das kostet Tokens und Latenz und verschlechtert die Tool-Auswahl. Eine Allow- oder Denylist pro Server in `core/mcp_config.json` lohnt sich. HiFiBerry hat außerdem destruktive Tools (`library_delete_album`, `library_delete_track`), die Gemini besser nicht sehen sollte.
 - **Daten aus v2 retten:** Auf dem Pi liegen in `~/jarvis/memories/` (8,2 MB) das Mem0-Archiv aller v2-Gespräche (`paul_archive`), das Tages-Journal (`paul_journal`) sowie `core.md` und `episodic.md`. Das vor dem Löschen von `~/jarvis` sichern und gegebenenfalls nach `archive.jsonl` oder Basic Memory migrieren (`migrate_memories.py` als Startpunkt).
+
+---
+
+## Portabilität – damit das Repo auch bei anderen läuft
+
+Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts, Entities oder Hardware-Annahmen im Code.
+
+- [x] **`.env.example`** anlegen
+- [ ] **`requirements.txt` aufräumen.** Die Zeile `/home/pi/aiyprojects-raspbian` ist ein lokaler Pfad und wird in v3 gar nicht genutzt (kein `aiy`-Import mehr) → entfernen. Pi-spezifische Pakete wie `smbus2` in eine eigene `requirements-pi.txt` auslagern.
+- [ ] **Persönlichen Prompt aus `core/llm.py` herauslösen.** Folgendes steht dort fest im Code: „Paul", Münchner Lokalkolorit, die Yamaha-Sleep-Button-Regel, „Library Radio" und Plexamp/HiFiBerry. Das kommt nach `prompts/persona.md` (gitignored) mit committeter `prompts/persona.example.md`. Die allgemeinen Regeln bleiben im Code.
+- [ ] **Werte konfigurierbar machen**, per Env oder Config-Datei:
+  - Voice (`Zubenelgenubi`)
+  - Mic-Gain (`* 4.0` in `_send_audio_loop`)
+  - Inaktivitäts-Timeout (15 s)
+  - Wake-Word-Modell und Schwelle (`hey_jarvis`, 0.5)
+  - Mailbox-Entity (`input_text.jarvis_chat` in `core/ha.py`)
+- [ ] **MCP-Config:** `core/mcp_config.json` enthält private Hosts → `mcp_config.example.json` committen und die echte Datei gitignoren. Dabei gleich eine Allow-/Denylist pro Server einbauen.
+- [ ] **Hardware-Abstraktion:** `BonnetHardware` setzt das Voice Bonnet V2 voraus (I2C-LED-Treiber auf 0x31, Button an GPIO 23). Das hinter ein kleines Interface legen, mit `NullHardware`, wenn nichts gefunden wird. Den Mock-Fallback ohne `smbus2` gibt es schon.
+- [ ] **Audio-Geräte konfigurierbar machen:**
+  - `asound.conf` hat `hw:CameraB409241` (PS3 Eye) und `hw:aiyvoicebonnet` fest verdrahtet.
+  - `core/audio.get_bonnet_card_index` sucht nach `aiyvoicebonnet`.
+  - Kartennamen per Env setzen, ohne Bonnet keine Mixer-Settings. Im README dokumentieren, welche Teile Hardware-spezifisch sind.
+- [ ] **Feste `/home/pi/jarvis_v3`-Pfade** in Hilfsskripten durch Pfade relativ zum Repo ersetzen. Betroffen: `convert_sounds.py`, `migrate_memories.py`, `dump_db.py`, `test_ha.py`, `test_wake.py`, `test_interrupt.py`.
+- [ ] **Repo-Struktur aufräumen:**
+  - manuelle Testskripte nach `tests/manual/`
+  - Einmal-Tools nach `scripts/` (Migration, `patch.py`, `bt.sh`, `pystack.sh`, Watchdog-Tests)
+  - Planungsdokumente aus dem Rewrite nach `docs/` (`implementation_plan*.md`, `migration_guide.md`) oder löschen
+- [ ] **Deployment ins Repo:**
+  - `deploy/jarvis.service` mit Platzhalter für User und Pfad
+  - `deploy/install.sh` (venv anlegen, Pakete installieren, ALSA-Config einrichten, Service aktivieren)
+- [ ] **Optionale Integrationen sauber deaktivierbar machen.** Ohne `HA_URL` keine HA-Tools und kein HA-Kontext im Prompt. Ohne MCP-Config keine MCP-Tools. Nichts davon darf den Start verhindern.

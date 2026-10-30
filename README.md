@@ -25,7 +25,7 @@ venv/bin/pip install -r requirements.txt
 cp asound.conf ~/.asoundrc
 ```
 
-`.env`:
+`.env` (template: `.env.example`):
 
 ```bash
 GEMINI_KEYS="key1,key2"
