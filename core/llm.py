@@ -29,6 +29,7 @@ class GeminiLiveProvider:
         # Session end: seconds of silence after Jarvis spoke, see _close_reason
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
+        self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "20"))
 
     def request_cancel(self):
         """Ends the running session (thread-safe). Does nothing when idle."""
@@ -201,7 +202,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             'user_parts': [mock_text] if mock_text else [],
             'jarvis_parts': [],
             'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
-            'last_user_speech': 0.0,  # last input transcript; only counts as activity once Gemini answers
+            'last_user_speech': 0.0,  # end of the last user speech; only counts as activity once Gemini answers
+            'speaking_since': None,  # server VAD: start of the user speech in progress
         }
 
         async def _do_connect(client_instance):
@@ -306,12 +308,15 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             # Re-raise so caller is aware after trying all keys
             raise last_error
 
-    @staticmethod
-    def _idle_seconds(state, audio_manager):
-        """Seconds of silence: counted from the end of playback, frozen while speech plays or a tool runs."""
+    def _idle_seconds(self, state, audio_manager):
+        """Seconds of silence: counted from the end of playback, frozen while speech plays, a tool runs or the user speaks."""
         # Gemini streams audio faster than real time, so the last chunk arrives long before playback ends.
         # Only speech counts: the looped thinking SFX (~38 s queued) must not keep the session open.
         if audio_manager.is_playing or state.get('tool_running', False):
+            return 0.0
+        # Server VAD says the user is speaking. Endless "speech" is background audio (music, TV), so it stops counting.
+        speaking_since = state.get('speaking_since')
+        if speaking_since and time.time() - speaking_since < self.max_speech:
             return 0.0
         return time.time() - max(state['last_activity'], audio_manager.last_speech_time)
 
@@ -334,6 +339,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
         if idle <= deadline:
             return None
         unanswered = ", user speech unanswered" if heard_at > 0 else ""
+        if state.get('speaking_since'):
+            unanswered = f", speech running > {self.max_speech:.0f}s (background audio?)"
         return f"{idle:.0f}s without activity (timeout {timeout:.0f}s{unanswered})"
 
     async def _inactivity_loop(self, state, audio_manager):
@@ -433,6 +440,13 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         value = getattr(response, signal, None)
                         if value is not None:
                             print(f"[LLM] Server {signal}: {value}", flush=True)
+                    voice_activity = getattr(response, 'voice_activity', None)
+                    activity_type = str(getattr(getattr(voice_activity, 'voice_activity_type', None), 'value', ''))
+                    if activity_type == 'ACTIVITY_START':
+                        state['speaking_since'] = time.time()
+                    elif activity_type == 'ACTIVITY_END':
+                        state['speaking_since'] = None
+                        state['last_user_speech'] = time.time()
 
                     server_content = getattr(response, 'server_content', None)
                     if server_content is not None:
@@ -453,6 +467,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         model_turn = getattr(server_content, 'model_turn', None)
                         if model_turn is not None:
                             state['last_activity'] = time.time()
+                            state['speaking_since'] = None  # Gemini answers, so the user turn is over
                             hardware.set_color("blue", blink=False) # Solid blue = speaking
                             for part in model_turn.parts:
                                 if getattr(part, 'thought', False):
