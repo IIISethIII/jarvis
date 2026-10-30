@@ -58,6 +58,22 @@ The list of currently hardcoded items is in FEATURE_BACKLOG.md under "Portabilit
 - Paths in scripts must be relative to the repo (`os.path.abspath(__file__)`), never `/home/pi/...`.
 - After changing `requirements.txt`, run `venv/bin/pip install -r requirements.txt` on the Pi. It is slow, so batch dependency changes.
 
+## Verifying a change (workflow)
+
+Restarting Jarvis is expensive. On the reference Pi it takes **~45 s** until `[Idle] Listening for 'Hey Jarvis'...`. During that time the assistant is deaf, and a restart cuts off a running conversation. Verify cheaply first and restart rarely:
+
+1. **Always (cheap):** `python3 -m py_compile <changed files>`. If the change touches HA, MCP or Gemini logic, also run the matching off-Pi test (`python -m tests.manual.test_mcp`, `test_ha_llm`, ...).
+2. **Restart only for runtime changes.** That means `main.py`, `core/`, `assets/sounds/`, or new dependencies. Changes to docs, `tests/` or `scripts/` need no restart.
+   - Batch the work: **one restart at the end of a task**, not after every edit.
+   - Make sure the code has reached the Pi before restarting.
+3. **Restart and check** with `scripts/restart_and_check.sh` (set `JARVIS_PI=user@host` when running off the Pi). The script waits for the ready line, then prints errors, MCP status and the last log lines with the known ALSA/JACK/CUDA noise filtered out.
+   - Exit `0` = ready.
+   - Exit `1` = traceback or crash: read the log, fix, repeat.
+   - Exit `2` = timeout.
+   - Also check that all MCP servers came online and the dynamic tool count is plausible.
+4. **Behaviour is not verified by a clean boot.** Whether a new tool or prompt rule actually works needs a voice test or the `--test` mode with `scripts/mock_trigger.py`. The `--test` mode stops the service and speaks out loud, so **ask the user before running it**. Otherwise tell them exactly what to say to Jarvis to test the change, and report "boots cleanly, behaviour untested" honestly.
+5. If the user might be talking to Jarvis right now, ask before restarting.
+
 ## Configuration
 
 - `.env`: see `.env.example`.

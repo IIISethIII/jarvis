@@ -47,6 +47,8 @@ sudo systemctl enable --now jarvis
 ## Development
 
 - Logs: `journalctl -u jarvis -f`, restart: `sudo systemctl restart jarvis`
+- Restart and verify the boot (waits for the ready line, prints errors): `scripts/restart_and_check.sh`
+  (from another machine: `JARVIS_PI=pi@<pi-ip> scripts/restart_and_check.sh`)
 - Test without speaking:
   1. `sudo systemctl stop jarvis`
   2. `venv/bin/python main.py --test`

@@ -7,6 +7,7 @@ After=network.target sound.target
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/jarvis_v3
+Environment=PYTHONUNBUFFERED=1
 ExecStartPre=/bin/sleep 2
 ExecStart=/home/pi/jarvis_v3/venv/bin/python /home/pi/jarvis_v3/main.py
 TimeoutStopSec=5
