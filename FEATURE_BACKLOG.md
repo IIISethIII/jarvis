@@ -20,7 +20,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
 - Smart Home: generisches `call_ha_service` + alle HA-States und -Services im System-Prompt
 - `set_speaker_volume`, `get_pi_temperature`, `end_conversation`
-- Core Memory (`data/core_memory.md`, append/replace), `search_archive` (Stichwortsuche, siehe Bug unten)
+- Core Memory (`data/core_memory.md`, append/replace), `search_archive` (Stichwortsuche)
 - MCP: `mcp.local` (SearXNG-Websuche, Firecrawl, Context7, Gmail, Google Calendar, Google Tasks, Mail, Fitbit/Google Health), `memory.local` (Basic Memory), HiFiBerry (Player, Queue, Library)
 - `--test` Modus mit `trigger.tmp` (Text-Injection per `send_client_content`)
 
@@ -28,11 +28,13 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 ## P0 – Bugs & Quick Wins
 
-- [ ] **Archiv wird nie geschrieben.** `memory.log_interaction()` existiert, wird aber nirgends aufgerufen. Auf dem Pi hat `data/archive.jsonl` nur 1 Zeile (aus `tests/manual/test_memory.py`), deshalb findet `search_archive` nie etwas.
+- [x] **Archiv wird nie geschrieben.** `memory.log_interaction()` existiert, wird aber nirgends aufgerufen. Auf dem Pi hat `data/archive.jsonl` nur 1 Zeile (aus `tests/manual/test_memory.py`), deshalb findet `search_archive` nie etwas.
   - Fix: In `core/llm.py → _receive_audio_loop` die `input_transcription`- und `output_transcription`-Fragmente pro Turn sammeln und bei `turn_complete` `memory.log_interaction(user, jarvis)` aufrufen. Am besten in einem Thread, damit die Audio-Schleife nicht blockiert.
   - Vorlage: v2 `core/live.py` (Sammeln von `_current_user_transcript`) und v2 `services/memory.py → save_interaction`.
 
 - [ ] **Prompt verweist auf ein Tool, das es nicht gibt.** Der System-Prompt in `core/llm.py` sagt bei „Musik": `category='station', name='Library Radio'`. Ein Tool mit diesen Parametern gibt es in v3 aber nicht (siehe P1 „Musik gezielt abspielen"). Entweder das Tool portieren oder die Prompt-Regel anpassen.
+
+- [ ] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet. Die Regel in `core/llm.py` (KONVERSATIONSSTEUERUNG) und die Tool-Beschreibung in `core/tools.py` enger fassen: nur bei einem klaren Abschluss, bei unklaren Fragmenten still bleiben. Das Sessionende per 15-s-Inaktivität reicht sonst.
 
 - [ ] **Hardware-Button ist nicht verdrahtet.** `BonnetHardware(button_pin=23)` wird angelegt, aber kein Handler gesetzt.
   - v2 (`main.py → on_button_press`): Ein Druck stoppt einen klingelnden Alarm bzw. löscht Timer. Läuft eine Session, wird sie abgebrochen (LED kurz rot). Im Idle blinkt die LED in einer zufälligen Farbe.
@@ -59,7 +61,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - v2: `services/ha.py → manage_shopping_list` (REST `/api/shopping_list` und `shopping_list.add_item`/`complete_item`).
   - Mit dem `return_response`-Feature oben reicht vielleicht schon eine Prompt-Regel und `todo.*`-Services. Sonst als eigenes Tool portieren.
 
-- [ ] **Kurzzeitgedächtnis über Sessions hinweg.** In v3 startet jedes Wake-Word eine komplett frische Session. „Und wie wird es morgen?" zwei Minuten nach der Wetterfrage hat dann keinen Kontext mehr.
+- [x] **Kurzzeitgedächtnis über Sessions hinweg.** In v3 startet jedes Wake-Word eine komplett frische Session. „Und wie wird es morgen?" zwei Minuten nach der Wetterfrage hat dann keinen Kontext mehr.
   - v2: `core/live.py → get_dynamic_system_instruction` hat die letzten 6 Turns in den Prompt gepackt, wenn die letzte Aktivität weniger als 15 min her war.
   - Für v3: Transkripte (siehe P0-Archiv-Fix) im RAM halten und beim nächsten `connect()` als Abschnitt „LETZTE KONVERSATION" anhängen. Alternativ die Session-Resumption der Live-API anschauen.
 
@@ -72,6 +74,16 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - Prüfen, was das HiFiBerry-MCP schon abdeckt (`library_*`, `queue_add_track`, `playback_command`). Für „Library Radio" und Playlists braucht man wahrscheinlich weiter den HA-`play_media`-Weg.
 
 ## P2 – Nützlich, mittlerer Aufwand
+
+- [ ] **Dynamische Persona- und User-Dateien (USER.md, ähnlich OpenClaw).** Baut auf dem Portabilitäts-Punkt „Persönlichen Prompt aus `core/llm.py` herauslösen" auf und sollte **vor** der Basic-Memory-Anbindung kommen, weil die sich in diese Prompt-Struktur einhängt.
+  - Der Prompt wird aus Dateien zusammengesetzt, zum Beispiel `prompts/persona.md` und `prompts/USER.md` (gitignored, mit committeten `*.example.md`). Die allgemeinen Regeln bleiben im Code.
+  - Offen: Wie weit Jarvis die Dateien selbst pflegt (wie heute `edit_core_memory`) und ob Core Memory darin aufgeht.
+  - Dateien bei jedem `connect()` neu lesen statt nur beim Boot, damit Änderungen ohne Neustart greifen.
+
+- [ ] **Basic Memory als optionales Wissen anbinden.** Ziel: Jarvis kennt das Wissen der anderen Agenten. Ohne `memory.local` in `core/mcp_config.json` muss alles wie bisher laufen, denn Basic Memory ist keine Voraussetzung für das Repo.
+  - **Lesen:** Eine Prompt-Regel wie „Für Wissen über den User, Projekte oder Dinge, die andere Agenten wissen, nutze `bm_search`". Die Regel kommt nur in den Prompt, wenn die `bm_*`-Tools geladen sind.
+  - **Fester Kontext:** Optional eine Hub-Note (zum Beispiel „Jarvis-Kontext") in den Prompt aufnehmen. Im Hintergrund cachen und regelmäßig aktualisieren, damit der Sessionstart nicht auf das MCP wartet.
+  - **Schreiben:** Keine Rohgespräche, die bleiben im lokalen Archiv. Stattdessen einmal nachts aus `data/archive.jsonl` eine Tageszusammenfassung erzeugen und als Log-Note nach den Basic-Memory-Konventionen ablegen (vorher „README - Conventions" lesen, Ziel `logs/YYYY-MM-daily-digest`). Das läuft besser auf einem Server als auf dem Pi, zum Beispiel auf dem Dev-Rechner, auf den `data/` ohnehin synchronisiert wird.
 
 - [ ] **Remote-Mailbox (Text an Jarvis aus Home Assistant).**
   - v2: `main.py` fragt alle 1,5 s `input_text.jarvis_chat` ab, leert das Feld, verarbeitet den Text und spricht die Antwort.
@@ -116,7 +128,8 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - [ ] **Token- und Kosten-Logging pro Session.**
   - v2: `core/live.py` summiert `usage_metadata` und gibt am Ende geschätzte € aus.
 
-- [ ] **Semantische Archivsuche** statt Stichwortsuche. v2 nutzte Mem0-Vektorsuche, v3 macht Substring-Matching. Option: Archiv in Basic Memory schreiben und `bm_search` nutzen.
+- [x] **Semantische Archivsuche** statt Stichwortsuche. Umgesetzt mit Gemini-Embeddings (`gemini-embedding-001`, 256 Dim.) in `data/archive_vectors.jsonl`, Stichwort-Treffer als Bonus und als Fallback ohne API. Bestehende Einträge nachträglich einbetten: `python -m scripts.backfill_embeddings`. (Basic Memory wurde bewusst nicht genommen, damit die Gesprächslogs nicht im geteilten Wissensspeicher landen, siehe P2 „Basic Memory als optionales Wissen anbinden".)
+  - [ ] Ähnlichkeitsschwelle `SEMANTIC_MIN_SCORE = 0.70` in `core/memory.py` ist aus wenigen Beispielen abgeleitet. Nach ein paar Wochen Praxis prüfen, ob Jarvis zu viel oder zu wenig findet.
 
 ## Abgedeckt (kein Port nötig)
 

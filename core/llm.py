@@ -89,11 +89,21 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
 - SPEICHERN: Nutze das Tool 'edit_core_memory' um neue permanente Fakten oder Routinen zu speichern oder bestehende zu ersetzen (z.B. wenn der User sagt "Merk dir dauerhaft X", "Speichere, dass ich Y mag").
 - ARCHIV-SUCHE (WICHTIG): Vergangene chronologische Konversationen stehen NICHT im Prompt. Alle Chat-Logs werden automatisch im Hintergrund archiviert und mit Zeitstempeln versehen (z.B. "[2026-08-01 14:00]").
 - Wenn der User sich auf etwas Vergangenes bezieht ("Was haben wir gestern besprochen?", "Wie hieß noch gleich...", "Was gab es heute zum Frühstück?"), MUSST du proaktiv und VOR DEINER ANTWORT das Tool 'search_archive' nutzen.
-- Übergib an 'search_archive' passende Suchbegriffe (z.B. "Frühstück gestern" oder konkrete Wörter). Rate niemals, was in der Vergangenheit passiert ist, suche es!
+- Übergib an 'search_archive' eine kurze Suchphrase in normaler Sprache (z.B. "Frühstück" oder "Gespräch über den Urlaub"). Die Suche versteht auch die Bedeutung, nicht nur exakte Wörter. Für einen bestimmten Tag hänge das Datum als YYYY-MM-DD an (z.B. "Frühstück 2026-08-01"), rechne "gestern" anhand der aktuellen Zeit oben um. Bei keinem Treffer versuche es mit anderen Wörtern. Bei Fragen wie "Worüber haben wir eben/zuletzt geredet?" ohne Stichwort übergib "*", das liefert die letzten Einträge. Rate niemals, was in der Vergangenheit passiert ist, suche es!
 \n"""
         if memory_text:
             system_prompt += f"WICHTIGE FAKTEN ÜBER DEN BENUTZER (CORE MEMORY):\n{memory_text}\n"
-            
+
+        from core import memory
+        recent = memory.get_recent_conversations()
+        if recent:
+            system_prompt += (
+                "\n=== LETZTE KONVERSATIONEN (gerade eben, chronologisch) ===\n"
+                "Nutze das nur als Kontext, wenn der User daran anknüpft (z.B. \"und morgen?\", \"wie viele Einwohner hat sie?\"). "
+                "Erwähne es nicht von selbst und wiederhole es nicht.\n"
+                f"{recent}\n"
+            )
+
         from core import tools
         from core.tools import ha_client
         
@@ -158,7 +168,14 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             )
         )
 
-        state = {'last_activity': time.time(), 'is_closed': False}
+        # user_parts / jarvis_parts collect the transcript fragments of the current turn (see _flush_turn)
+        state = {
+            'last_activity': time.time(),
+            'is_closed': False,
+            'user_parts': [mock_text] if mock_text else [],
+            'jarvis_parts': [],
+            'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
+        }
 
         async def _do_connect(client_instance):
             key_prev = self.api_keys[self.current_key_index][:8] + "..."
@@ -307,6 +324,19 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             else:
                 print(f"  [Mic Error] Send loop stopped: {e}")
 
+    @staticmethod
+    def _flush_turn(state):
+        """Writes the collected transcript of the current turn to the archive and resets the buffers."""
+        from core import memory
+        user_text = "".join(state['user_parts']).strip()
+        jarvis_text = "".join(state['jarvis_parts']).strip()
+        state['user_parts'].clear()
+        state['jarvis_parts'].clear()
+        if not user_text and not jarvis_text:
+            return
+        # Fire-and-forget in a worker thread so the audio loop never waits on the SD card
+        asyncio.get_running_loop().run_in_executor(None, memory.log_interaction, user_text, jarvis_text, state['session_id'])
+
     async def _receive_audio_loop(self, audio_manager, session, hardware, state, sfx):
         """Receives 24kHz audio from Gemini and plays it through the speaker."""
         from core import tools
@@ -326,6 +356,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         turn_complete = getattr(server_content, 'turn_complete', None)
                         
                         if interrupted:
+                            self._flush_turn(state)
                             state['last_activity'] = time.time()
                             state['is_thinking'] = False
                             hardware.set_color("orange", blink=False)
@@ -350,18 +381,25 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         output_transcription = getattr(server_content, 'output_transcription', None)
                         if output_transcription is not None and getattr(output_transcription, 'text', None):
                             state['last_activity'] = time.time()
+                            state['jarvis_parts'].append(output_transcription.text)
                             print(f"\n[Gemini Voice Transcript] {output_transcription.text}", flush=True)
 
                         input_transcription = getattr(server_content, 'input_transcription', None)
                         if input_transcription is not None and getattr(input_transcription, 'text', None):
                             state['last_activity'] = time.time()
                             hardware.set_color("blue", blink=True) # Pulsing blue = transcribing/thinking
+                            if state['jarvis_parts']:
+                                self._flush_turn(state)  # new user speech after an answer: previous exchange is done
+                            state['user_parts'].append(input_transcription.text)
                             print(f"\n[User Voice Transcript] {input_transcription.text}", flush=True)
                             state['is_thinking'] = True
                             if sfx:
                                 sfx.play_thinking()
 
                         if turn_complete:
+                            # A turn that ends in a tool call has no answer yet: keep the user text until the answer is complete
+                            if state['jarvis_parts']:
+                                self._flush_turn(state)
                             hardware.set_color("purple", blink=False) # Solid violet = waiting for input
                             print("") # Print newline after Jarvis finishes speaking
                             
@@ -381,7 +419,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                             
                             print(f"[LLM] Executing Tool: {func_name} with args {func_args}")
                             if func_name in tools.TOOL_IMPLEMENTATIONS:
-                                result = tools.execute_tool(func_name, func_args)
+                                result = await asyncio.to_thread(tools.execute_tool, func_name, func_args)
                                 if result == "<END_CONVERSATION>":
                                     print("\n[LLM] Conversation ended by Gemini.", flush=True)
                                     if sfx:
@@ -415,3 +453,6 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                 print(f"[LLM] Receive stream closed gracefully.")
             else:
                 print(f"[Receive Loop Error] {e}")
+        finally:
+            # Session ended mid-turn (end_conversation, GoAway, inactivity): keep what was said so far
+            self._flush_turn(state)

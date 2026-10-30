@@ -21,7 +21,7 @@ core/
   sfx.py             UI sounds (raw PCM)
   hardware.py        Voice Bonnet V2 RGB LED (mock fallback without smbus2)
   ha.py              Home Assistant REST wrapper
-  memory.py          data/core_memory.md + data/archive.jsonl (not in git)
+  memory.py          data/core_memory.md, data/archive.jsonl + embeddings for semantic search (not in git)
 assets/sounds/       UI sounds as 24 kHz mono s16le PCM
 assets/sounds_src/   original .ogg sources (see scripts/convert_sounds.py)
 deploy/              asound.conf (ALSA for the reference hardware), jarvis.service
