@@ -51,17 +51,29 @@ The list of currently hardcoded items is in FEATURE_BACKLOG.md under "Portabilit
 
 - **On the Pi:**
   - Restart the service with `sudo systemctl restart jarvis` and follow the logs with `journalctl -u jarvis -f`.
-  - To test without speaking: stop the service, run `venv/bin/python main.py --test`, then from a second shell run `venv/bin/python mock_trigger.py "Mach das Licht an"`. The text is injected into a Live session and the answer is spoken.
-- **Off the Pi:** HA, MCP and Gemini text tests work (`test_ha_llm.py`, `test_mcp.py`, `core/ha.py`, `core/memory.py`, `core/tools.py`). Anything that touches ALSA or the mic (`main.py`, `core/audio.py`) needs the Pi. `core/hardware.py` falls back to mock LEDs without `smbus2`.
-- There is no automated test suite; the `test_*.py` files are manual scripts from the rewrite.
+  - To test without speaking: stop the service, run `venv/bin/python main.py --test`, then from a second shell run `venv/bin/python scripts/mock_trigger.py "Mach das Licht an"`. The text is injected into a Live session and the answer is spoken.
+- **Manual test scripts** live in `tests/manual/`. Run them **from the repo root as modules**, e.g. `python -m tests.manual.test_mcp`, so that `core.*` imports resolve.
+- **Off the Pi:** HA, MCP and Gemini text tests work (`tests.manual.test_ha_llm`, `tests.manual.test_mcp`, `core/ha.py`, `core/memory.py`, `core/tools.py`). Anything that touches ALSA or the mic (`main.py`, `core/audio.py`) needs the Pi. `core/hardware.py` falls back to mock LEDs without `smbus2`.
+- There is no automated test suite yet.
+- Paths in scripts must be relative to the repo (`os.path.abspath(__file__)`), never `/home/pi/...`.
 - After changing `requirements.txt`, run `venv/bin/pip install -r requirements.txt` on the Pi. It is slow, so batch dependency changes.
 
 ## Configuration
 
 - `.env`: see `.env.example`.
 - `core/mcp_config.json`: MCP servers.
-- `asound.conf`: ALSA setup for the reference hardware (copy to `~/.asoundrc`).
-- systemd unit: see README.
+- `deploy/asound.conf`: ALSA setup for the reference hardware (copy to `~/.asoundrc`).
+- `deploy/jarvis.service`: systemd unit.
+
+## Layout
+
+- Runtime code: `main.py`, `core/`, `assets/sounds/`.
+- Everything else is tooling:
+  - `scripts/`, with `debug/` and the one-off `migration/` (v2 Mem0 → v3)
+  - `tests/manual/`
+  - `deploy/`
+  - `docs/` (`v2-architecture.md` describes the old design and is useful when porting backlog features)
+- Keep the repo root clean. New helpers go into these folders.
 
 ## Personal setup
 

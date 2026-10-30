@@ -2,7 +2,7 @@ import chromadb
 import os
 
 V2_MEM0_DIR = "/home/pi/jarvis/memories/mem0_db"
-V3_DATA_DIR = "/home/pi/jarvis_v3/data"
+V3_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
 
 def main():
     print("========================================")

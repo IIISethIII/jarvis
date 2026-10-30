@@ -28,7 +28,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 ## P0 – Bugs & Quick Wins
 
-- [ ] **Archiv wird nie geschrieben.** `memory.log_interaction()` existiert, wird aber nirgends aufgerufen. Auf dem Pi hat `data/archive.jsonl` nur 1 Zeile (aus `test_memory.py`), deshalb findet `search_archive` nie etwas.
+- [ ] **Archiv wird nie geschrieben.** `memory.log_interaction()` existiert, wird aber nirgends aufgerufen. Auf dem Pi hat `data/archive.jsonl` nur 1 Zeile (aus `tests/manual/test_memory.py`), deshalb findet `search_archive` nie etwas.
   - Fix: In `core/llm.py → _receive_audio_loop` die `input_transcription`- und `output_transcription`-Fragmente pro Turn sammeln und bei `turn_complete` `memory.log_interaction(user, jarvis)` aufrufen. Am besten in einem Thread, damit die Audio-Schleife nicht blockiert.
   - Vorlage: v2 `core/live.py` (Sammeln von `_current_user_transcript`) und v2 `services/memory.py → save_interaction`.
 
@@ -43,7 +43,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 - [ ] **Timer & Wecker.** In v3 gibt es gar keine Timer.
   - v2: `services/timer.py` (`manage_timer_alarm`, `background_timer_check`, `play_alarm_sound`, `stop_alarm_sound`, Auto-Stopp nach `ALARM_TIMEOUT = 120` s). Gestoppt wird per Wake-Word oder Button, die LED atmet dabei orange.
-  - Für v3: `assets_sounds/alarm_gentle.ogg` mit `convert_sounds.py` nach `assets/sounds/alarm.pcm` konvertieren und als Loop über `SFXManager` abspielen. Timer-Thread in `main.py` starten. Im Idle-Loop: Wake-Word bei aktivem Alarm = Alarm stoppen statt Session starten.
+  - Für v3: `assets/sounds_src/alarm_gentle.ogg` mit `scripts/convert_sounds.py` nach `assets/sounds/alarm.pcm` konvertieren und als Loop über `SFXManager` abspielen. Timer-Thread in `main.py` starten. Im Idle-Loop: Wake-Word bei aktivem Alarm = Alarm stoppen statt Session starten.
   - Mehrere Timer erlauben (v2 erlaubte nur einen).
 
 - [ ] **Musik leiser drehen während Jarvis zuhört/spricht (Media-Ducking).**
@@ -136,7 +136,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - **Lokale Tools blockieren die Audio-Schleife:** `_receive_audio_loop` ruft `tools.execute_tool()` synchron auf. Langsame Tools (HA-Verlauf, Routen, Wetter) besser mit `await asyncio.to_thread(tools.execute_tool, name, args)` ausführen.
 - **RAM ist knapp:** Der Pi Zero 2W hat 463 MB, Jarvis belegt davon schon ~60 % und der Pi swappt. Heute hat er mehrere Minuten nicht auf SSH reagiert und lief danach frisch gebootet. Also keine schweren Libraries wie Mem0, ChromaDB oder LiteLLM zurückholen, sondern Rechenarbeit auf Server/MCP auslagern.
 - **Viele MCP-Tools in jeder Session:** Gateway (32) + Basic Memory (12) + HiFiBerry (30+) + lokale Tools ergeben ~80 Tool-Definitionen pro Live-Session. Das kostet Tokens und Latenz und verschlechtert die Tool-Auswahl. Eine Allow- oder Denylist pro Server in `core/mcp_config.json` lohnt sich. HiFiBerry hat außerdem destruktive Tools (`library_delete_album`, `library_delete_track`), die Gemini besser nicht sehen sollte.
-- **Daten aus v2 retten:** Auf dem Pi liegen in `~/jarvis/memories/` (8,2 MB) das Mem0-Archiv aller v2-Gespräche (`paul_archive`), das Tages-Journal (`paul_journal`) sowie `core.md` und `episodic.md`. Das vor dem Löschen von `~/jarvis` sichern und gegebenenfalls nach `archive.jsonl` oder Basic Memory migrieren (`migrate_memories.py` als Startpunkt).
+- **Daten aus v2 retten:** Auf dem Pi liegen in `~/jarvis/memories/` (8,2 MB) das Mem0-Archiv aller v2-Gespräche (`paul_archive`), das Tages-Journal (`paul_journal`) sowie `core.md` und `episodic.md`. Das vor dem Löschen von `~/jarvis` sichern und gegebenenfalls nach `archive.jsonl` oder Basic Memory migrieren (`scripts/migration/migrate_memories.py` als Startpunkt).
 
 ---
 
@@ -145,7 +145,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts, Entities oder Hardware-Annahmen im Code.
 
 - [x] **`.env.example`** anlegen
-- [ ] **`requirements.txt` aufräumen.** Die Zeile `/home/pi/aiyprojects-raspbian` ist ein lokaler Pfad und wird in v3 gar nicht genutzt (kein `aiy`-Import mehr) → entfernen. Pi-spezifische Pakete wie `smbus2` in eine eigene `requirements-pi.txt` auslagern.
+- [x] **`requirements.txt` aufräumen.** Die Zeile `/home/pi/aiyprojects-raspbian` ist ein lokaler Pfad und wird in v3 gar nicht genutzt (kein `aiy`-Import mehr) → entfernt, ebenso die ungenutzten `pygame`, `beautifulsoup4`, `mem0ai` und `chromadb`. `smbus2` ist als optional markiert. (Die Migrationsskripte unter `scripts/migration/` brauchen bei Bedarf zusätzlich `chromadb`.)
 - [ ] **Persönlichen Prompt aus `core/llm.py` herauslösen.** Folgendes steht dort fest im Code: „Paul", Münchner Lokalkolorit, die Yamaha-Sleep-Button-Regel, „Library Radio" und Plexamp/HiFiBerry. Das kommt nach `prompts/persona.md` (gitignored) mit committeter `prompts/persona.example.md`. Die allgemeinen Regeln bleiben im Code.
 - [ ] **Werte konfigurierbar machen**, per Env oder Config-Datei:
   - Voice (`Zubenelgenubi`)
@@ -156,15 +156,15 @@ Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts
 - [ ] **MCP-Config:** `core/mcp_config.json` enthält private Hosts → `mcp_config.example.json` committen und die echte Datei gitignoren. Dabei gleich eine Allow-/Denylist pro Server einbauen.
 - [ ] **Hardware-Abstraktion:** `BonnetHardware` setzt das Voice Bonnet V2 voraus (I2C-LED-Treiber auf 0x31, Button an GPIO 23). Das hinter ein kleines Interface legen, mit `NullHardware`, wenn nichts gefunden wird. Den Mock-Fallback ohne `smbus2` gibt es schon.
 - [ ] **Audio-Geräte konfigurierbar machen:**
-  - `asound.conf` hat `hw:CameraB409241` (PS3 Eye) und `hw:aiyvoicebonnet` fest verdrahtet.
+  - `deploy/asound.conf` hat `hw:CameraB409241` (PS3 Eye) und `hw:aiyvoicebonnet` fest verdrahtet.
   - `core/audio.get_bonnet_card_index` sucht nach `aiyvoicebonnet`.
   - Kartennamen per Env setzen, ohne Bonnet keine Mixer-Settings. Im README dokumentieren, welche Teile Hardware-spezifisch sind.
-- [ ] **Feste `/home/pi/jarvis_v3`-Pfade** in Hilfsskripten durch Pfade relativ zum Repo ersetzen. Betroffen: `convert_sounds.py`, `migrate_memories.py`, `dump_db.py`, `test_ha.py`, `test_wake.py`, `test_interrupt.py`.
-- [ ] **Repo-Struktur aufräumen:**
+- [x] **Feste `/home/pi/jarvis_v3`-Pfade** in Hilfsskripten durch Pfade relativ zum Repo ersetzen. Betroffen: `convert_sounds.py`, `migrate_memories.py`, `dump_db.py`, `test_ha.py`, `test_wake.py`, `test_interrupt.py`.
+- [x] **Repo-Struktur aufräumen:**
   - manuelle Testskripte nach `tests/manual/`
   - Einmal-Tools nach `scripts/` (Migration, `patch.py`, `bt.sh`, `pystack.sh`, Watchdog-Tests)
   - Planungsdokumente aus dem Rewrite nach `docs/` (`implementation_plan*.md`, `migration_guide.md`) oder löschen
 - [ ] **Deployment ins Repo:**
-  - `deploy/jarvis.service` mit Platzhalter für User und Pfad
+  - [x] `deploy/jarvis.service` (+ `deploy/asound.conf`)
   - `deploy/install.sh` (venv anlegen, Pakete installieren, ALSA-Config einrichten, Service aktivieren)
 - [ ] **Optionale Integrationen sauber deaktivierbar machen.** Ohne `HA_URL` keine HA-Tools und kein HA-Kontext im Prompt. Ohne MCP-Config keine MCP-Tools. Nichts davon darf den Start verhindern.

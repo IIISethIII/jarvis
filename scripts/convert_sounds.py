@@ -1,8 +1,9 @@
 import os
 import subprocess
 
-v2_sounds = "/home/pi/jarvis_v3/assets_sounds"
-v3_sounds = "/home/pi/jarvis_v3/assets/sounds"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+v2_sounds = os.path.join(ROOT, "assets", "sounds_src")
+v3_sounds = os.path.join(ROOT, "assets", "sounds")
 
 os.makedirs(v3_sounds, exist_ok=True)
 

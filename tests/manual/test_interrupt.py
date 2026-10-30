@@ -10,7 +10,7 @@ def main():
     print(" JARVIS V3 - WAKE WORD INTERRUPT TEST")
     print("========================================")
     
-    pcm_path = "/home/pi/jarvis_v3/hey_jarvis.pcm"
+    pcm_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "hey_jarvis.pcm")
     if not os.path.exists(pcm_path):
         print(f"Error: Could not find {pcm_path}")
         sys.exit(1)

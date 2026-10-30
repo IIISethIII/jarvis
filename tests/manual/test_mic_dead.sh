@@ -1,4 +1,5 @@
 #!/bin/bash
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 # test_mic_dead.sh
 
 echo "========================================"
@@ -36,7 +37,7 @@ if [ "$IS_DEADLOCK" = "1" ]; then
     echo "The Rapid-Fire Watchdog didn't catch this because the chunks are processed slowly (taking 40ms each), so they don't look like an ALSA crash, but they permanently delay the microphone input."
     echo ""
     echo "Running pystack to prove the thread is stuck in openwakeword:"
-    sudo /home/pi/jarvis_v3/venv/bin/pystack $MAIN_PID | grep -A 5 "_streaming_melspectrogram"
+    sudo $REPO/venv/bin/pystack $MAIN_PID | grep -A 5 "_streaming_melspectrogram"
     exit 0
 else
     echo "Mic is healthy and real-time. Queue is not backed up."

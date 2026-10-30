@@ -1,6 +1,5 @@
 import sys
 import os
-sys.path.append('/home/pi/jarvis_v3')
 from core.tools import ha_client
 import json
 

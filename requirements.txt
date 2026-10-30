@@ -1,12 +1,9 @@
-requests
-python-dotenv
-pyaudio
-pygame
-openwakeword
-mem0ai
-chromadb
 google-genai
 mcp
-beautifulsoup4
-/home/pi/aiyprojects-raspbian
+openwakeword
+numpy
+pyaudio
+requests
+python-dotenv
+# Optional: RGB LED of the AIY Voice Bonnet V2 (falls back to mock LEDs without it)
 smbus2
