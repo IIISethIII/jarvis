@@ -1,0 +1,5 @@
+# Code runs on the Pi: keep LF so shell scripts work after SFTP upload from Windows
+* text=auto eol=lf
+*.pcm binary
+*.ogg binary
+*.wav binary

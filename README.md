@@ -1,55 +1,57 @@
-# Jarvis - AIY Voice Assistant
+# Jarvis v3
 
-A custom voice assistant built for the Google AIY Voice Kit (Raspberry Pi), integrated with Gemini LLM, Home Assistant, and Picovoice.
+Voice assistant for a Raspberry Pi Zero 2W with Google AIY Voice Bonnet V2 and PS3 Eye microphone,
+built on the Gemini Live API (native voice-in/voice-out).
 
-## Features
-* **Wake Word Detection:** Uses `pvporcupine` for "Jarvis" wake word detection.
-* **LLM Backend:** Google Gemini (via REST API) for natural conversation.
-* **RAG Memory:** Local vector-based memory system to provide persistent context to the LLM.
-* **Smart Home:** Controls lights and media via Home Assistant API, including automatic volume ducking when Jarvis is active.
-* **TTS & Interruption:** Google Cloud Text-to-Speech with "Barge-in" support (stops speaking when the wake word is detected).
-* **Multiprocessing:** Isolated audio worker process to ensure stability and low-latency detection.
-* **Privacy:** Custom VAD (Voice Activity Detection) using `pvcobra`.
+Predecessor: the v2 hybrid architecture (tag `v2-final`).
+Open features to port from v2: [FEATURE_BACKLOG.md](FEATURE_BACKLOG.md).
 
-## Setup
+## Components
 
-1.  **Hardware:** Raspberry Pi Zero W with Google AIY Voice Hat (v2) and PS3 Eye USB Microphone.
+- `main.py`: boot, mic watchdog, wake word loop (`--test` = inject text via `trigger.tmp`)
+- `core/llm.py`: `GeminiLiveProvider` (Live session, system prompt with HA context, tool calls, API key rotation)
+- `core/tools.py`: local tools (`call_ha_service`, `set_speaker_volume`, core memory, archive search, ...)
+- `core/mcp.py` + `core/mcp_config.json`: MCP servers (gateway, Basic Memory, HiFiBerry)
+- `core/audio.py`, `core/wake.py`, `core/sfx.py`, `core/hardware.py`: ALSA, openWakeWord, PCM sounds, LEDs
+- `core/ha.py`: Home Assistant REST wrapper
+- `core/memory.py`: `data/core_memory.md` + `data/archive.jsonl` (not in git)
 
-2.  **Hardware & Power Optimization (Crucial for Pi Zero):**
-    Edit `/boot/cmdline.txt` and add these parameters to the end of the line (do not create a new line):
-    ```text
-    dwc_otg.fiq_enable=0 dwc_otg.fiq_fsm_enable=0 dwc_otg.speed=1 dwc_otg.nak_holdoff=1 usbcore.autosuspend=-1
-    ```
-    Edit `/boot/config.txt` and ensure the following settings are active to free up RAM and provide enough power to the USB mic:
-    ```text
-    [all]
-    start_x=0             # Disable camera firmware
-    gpu_mem=16            # Minimum GPU RAM, more for System/Python
-    max_usb_current=1     # Unlock USB power limit for the PS3 Eye
-    dtoverlay=spi0-1cs,cs0_pin=7
-    ```
+## Setup on the Pi
 
-3.  **ALSA Configuration:**
-    Use the `dsnoop` and `dmix` configuration in `/etc/asound.conf` or `~/.asoundrc` to handle buffering and multi-app audio access. Recommended `period_size` for PS3 Eye (48kHz) to match Porcupine (16kHz) is `1536`.
-
-4.  **Environment Variables:**
-    Create a `.env` file in the root directory:
-    ```bash
-    PICOVOICE_KEY="your_picovoice_key"
-    GEMINI_KEY="your_gemini_api_key"
-    GEMINI_MODEL="gemini-2.0-flash"
-    GOOGLE_TTS_KEY="your_google_cloud_key"
-    HA_TOKEN="your_home_assistant_token"
-    HA_URL="[http://homeassistant.local:8123](http://homeassistant.local:8123)"
-    ```
-
-5.  **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    *Note: Ensure `libasound2-dev` and `portaudio19-dev` are installed for `pyaudio`.*
-
-## Usage
-Run the main module:
 ```bash
-python3 -m jarvis.main
+cd /home/pi/jarvis_v3
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
+cp asound.conf ~/.asoundrc
+```
+
+`.env`:
+
+```bash
+GEMINI_KEYS="key1,key2"
+GEMINI_LIVE_MODEL="gemini-3.1-flash-live-preview"
+HA_URL="http://homeassistant.local:8123"
+HA_TOKEN="..."
+```
+
+systemd unit `/etc/systemd/system/jarvis.service`:
+
+```ini
+[Unit]
+Description=Jarvis V3 AI Voice Assistant
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jarvis_v3
+ExecStartPre=/bin/sleep 2
+ExecStart=/home/pi/jarvis_v3/venv/bin/python /home/pi/jarvis_v3/main.py
+TimeoutStopSec=5
+KillMode=control-group
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```

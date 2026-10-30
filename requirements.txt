@@ -1,15 +1,12 @@
 requests
 python-dotenv
 pyaudio
-pvporcupine
-pvcobra
 pygame
-numpy
-chromadb
+openwakeword
 mem0ai
-litellm
+chromadb
 google-genai
 mcp
 beautifulsoup4
-/home/pi/aiyprojects
-# Note: 'aiy' package depends on the specific Google AIY hardware/image
+/home/pi/aiyprojects-raspbian
+smbus2

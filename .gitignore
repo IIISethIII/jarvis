@@ -1,22 +1,23 @@
-# Python artifacts
+# Python
 __pycache__/
 *.pyc
-*.pyo
-*.pyd
+venv/
+.venv/
 
-# Environment variables & Secrets
+# Secrets
 .env
-.env.local
+.env.*
 
-# data files
-*.json
-*.npy
+# Personal data (core memory, conversation archive)
+data/
 
-# System/IDE
-.DS_Store
+# Audio recordings / runtime files
+*.wav
+*.raw
+hey_jarvis.pcm
+trigger.tmp
+
+# IDE
 .vscode/
 .idea/
-venv/
-env/
-tests/
-test/
+.DS_Store

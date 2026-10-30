@@ -1,0 +1,139 @@
+# Jarvis v3 – Feature-Backlog (fehlende Features aus v2 & älter)
+
+Stand: 2026-10-30. Basis für die Weiterentwicklung ist **jarvis_v3**: Diese Version läuft auf dem Pi als `jarvis.service`, der Code ist dort byte-identisch mit dem lokalen Ordner.
+Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, inkl. der uncommitteten Änderungen).
+
+## Versionen im Überblick
+
+| Ordner | Was es ist | Status |
+|---|---|---|
+| `jarvis_v3` | Neubau vom Juli 2026, reines Gemini Live (`gemini-3.1-flash-live-preview`), MCP, Core-Memory als Markdown | **Läuft auf dem Pi**, ist aber **nicht in Git** |
+| `jarvis_v2` | Hybrid: Gemini Live nur als Sprach-Frontend, alles wird per `delegate_to_backend` an das REST-„Slow Brain" delegiert, dazu Mem0 | Git = `origin/main` (19d8629, gepusht) + uncommittete Änderungen (openWakeWord statt Porcupine usw.). Liegt inaktiv in `~/jarvis` auf dem Pi |
+| `jarvis_v2 - Copy` | Zwischenstand vom 22.02. (af6bebf + Voice-Bonnet-V2-Port) | vollständig in der v2-Historie enthalten |
+| `jarvis` | alter Git-Klon auf af6bebf, dazu `history.json` (38 MB) | vollständig in der v2-Historie enthalten |
+| `Jarvis-Project` | Backup des Pi-Home-Verzeichnisses (Dez 2025/Jan 2026), Git-Stand 48da2f8 | Vorgänger von v2. **Enthält Secrets** (`.env`, `.git-credentials`) |
+
+## Was v3 schon kann
+
+- Wake-Word „Hey Jarvis" (openWakeWord), Mikrofon-Watchdog (Timeout, Rapid-Fire, Stille, Queue-Stau)
+- Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach 15 s Stille
+- LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
+- Smart Home: generisches `call_ha_service` + alle HA-States und -Services im System-Prompt
+- `set_speaker_volume`, `get_pi_temperature`, `end_conversation`
+- Core Memory (`data/core_memory.md`, append/replace), `search_archive` (Stichwortsuche, siehe Bug unten)
+- MCP: `mcp.local` (SearXNG-Websuche, Firecrawl, Context7, Gmail, Google Calendar, Google Tasks, Mail, Fitbit/Google Health), `memory.local` (Basic Memory), HiFiBerry (Player, Queue, Library)
+- `--test` Modus mit `trigger.tmp` (Text-Injection per `send_client_content`)
+
+---
+
+## P0 – Bugs & Quick Wins
+
+- [ ] **Archiv wird nie geschrieben.** `memory.log_interaction()` existiert, wird aber nirgends aufgerufen. Auf dem Pi hat `data/archive.jsonl` nur 1 Zeile (aus `test_memory.py`), deshalb findet `search_archive` nie etwas.
+  - Fix: In `core/llm.py → _receive_audio_loop` die `input_transcription`- und `output_transcription`-Fragmente pro Turn sammeln und bei `turn_complete` `memory.log_interaction(user, jarvis)` aufrufen. Am besten in einem Thread, damit die Audio-Schleife nicht blockiert.
+  - Vorlage: v2 `core/live.py` (Sammeln von `_current_user_transcript`) und v2 `services/memory.py → save_interaction`.
+
+- [ ] **Prompt verweist auf ein Tool, das es nicht gibt.** Der System-Prompt in `core/llm.py` sagt bei „Musik": `category='station', name='Library Radio'`. Ein Tool mit diesen Parametern gibt es in v3 aber nicht (siehe P1 „Musik gezielt abspielen"). Entweder das Tool portieren oder die Prompt-Regel anpassen.
+
+- [ ] **Hardware-Button ist nicht verdrahtet.** `BonnetHardware(button_pin=23)` wird angelegt, aber kein Handler gesetzt.
+  - v2 (`main.py → on_button_press`): Ein Druck stoppt einen klingelnden Alarm bzw. löscht Timer. Läuft eine Session, wird sie abgebrochen (LED kurz rot). Im Idle blinkt die LED in einer zufälligen Farbe.
+  - In v3 ist das wichtiger als in v2: Das Audio ist Half-Duplex, das Mikro wird während der Wiedergabe verworfen (`AudioManager.get_audio_chunk`). Per Stimme kann man Jarvis also nicht unterbrechen, **der Button ist der einzige Weg dafür**.
+  - Umsetzung: Flag `cancel_requested`, das `_send_audio_loop` oder `_inactivity_loop` prüft und dann die Session beendet. Dazu `audio_manager.stop_playback()`.
+
+## P1 – Alltagsfeatures mit hohem Nutzen
+
+- [ ] **Timer & Wecker.** In v3 gibt es gar keine Timer.
+  - v2: `services/timer.py` (`manage_timer_alarm`, `background_timer_check`, `play_alarm_sound`, `stop_alarm_sound`, Auto-Stopp nach `ALARM_TIMEOUT = 120` s). Gestoppt wird per Wake-Word oder Button, die LED atmet dabei orange.
+  - Für v3: `assets_sounds/alarm_gentle.ogg` mit `convert_sounds.py` nach `assets/sounds/alarm.pcm` konvertieren und als Loop über `SFXManager` abspielen. Timer-Thread in `main.py` starten. Im Idle-Loop: Wake-Word bei aktivem Alarm = Alarm stoppen statt Session starten.
+  - Mehrere Timer erlauben (v2 erlaubte nur einen).
+
+- [ ] **Musik leiser drehen während Jarvis zuhört/spricht (Media-Ducking).**
+  - v2: `main.py → lower_volume` und `restore_volume` (liest `sensor.hifiberry_plexamp_volume`, halbiert die Lautstärke und stellt sie danach wieder her). Dazu ein SIGTERM-Handler, der beim Stoppen des Dienstes die Lautstärke zurücksetzt und die LEDs ausschaltet.
+  - Für v3: vor `llm_provider.connect()` absenken, im `finally` wiederherstellen. Alternativ direkt über das HiFiBerry-MCP oder die HA-`media_player`-Lautstärke.
+
+- [ ] **Service-Antworten aus HA lesen (`return_response`).** Das schaltet gleich mehrere Features frei. `call_ha_service` kann aktuell nur auslösen, aber keine Daten zurückgeben.
+  - Erweiterung: optionaler Parameter `return_response: bool` → `POST /api/services/{domain}/{service}?return_response=true` und das JSON zurückgeben.
+  - Damit funktionieren: `weather.get_forecasts` (Wettervorhersage stündlich/täglich, inkl. „Regnet es gleich? Kann ich Rad fahren?"), `todo.get_items` (Einkaufsliste vorlesen), `calendar.get_events`.
+  - v2 als Vorlage: `services/ha.py → get_weather_forecast` (inkl. Fallback auf das `forecast`-Attribut und Begrenzung auf 12 h bzw. 5 Tage).
+
+- [ ] **Einkaufsliste (hinzufügen, abhaken, vorlesen).**
+  - v2: `services/ha.py → manage_shopping_list` (REST `/api/shopping_list` und `shopping_list.add_item`/`complete_item`).
+  - Mit dem `return_response`-Feature oben reicht vielleicht schon eine Prompt-Regel und `todo.*`-Services. Sonst als eigenes Tool portieren.
+
+- [ ] **Kurzzeitgedächtnis über Sessions hinweg.** In v3 startet jedes Wake-Word eine komplett frische Session. „Und wie wird es morgen?" zwei Minuten nach der Wetterfrage hat dann keinen Kontext mehr.
+  - v2: `core/live.py → get_dynamic_system_instruction` hat die letzten 6 Turns in den Prompt gepackt, wenn die letzte Aktivität weniger als 15 min her war.
+  - Für v3: Transkripte (siehe P0-Archiv-Fix) im RAM halten und beim nächsten `connect()` als Abschnitt „LETZTE KONVERSATION" anhängen. Alternativ die Session-Resumption der Live-API anschauen.
+
+- [ ] **Inhalte aufs Handy schicken (`send_to_phone`).**
+  - v2: `services/ha.py → send_notification` (`notify.notify` mit `clickAction`-URL, Bild, Priorität `high` → `channel: alarm_stream`) plus Prompt-Regeln: lange Antworten (Rezepte, Listen, Code), Bilder und Routen **proaktiv** aufs Handy schicken, ohne vorher zu fragen.
+  - Theoretisch geht das auch über `call_ha_service`. Ein eigenes Tool mit klaren Parametern ist für das Live-Modell aber deutlich zuverlässiger.
+
+- [ ] **Musik gezielt abspielen (Plex/Plexamp).**
+  - v2: `services/ha.py → execute_play_music` (Kategorien artist/album/playlist/track/station, `plex://`-Content-IDs, „Library Radio" = feste Station-URL `plex://…/library/sections/6/stations/1`). Ohne Angabe wird automatisch der Plexamp-Player gewählt.
+  - Prüfen, was das HiFiBerry-MCP schon abdeckt (`library_*`, `queue_add_track`, `playback_command`). Für „Library Radio" und Playlists braucht man wahrscheinlich weiter den HA-`play_media`-Weg.
+
+## P2 – Nützlich, mittlerer Aufwand
+
+- [ ] **Remote-Mailbox (Text an Jarvis aus Home Assistant).**
+  - v2: `main.py` fragt alle 1,5 s `input_text.jarvis_chat` ab, leert das Feld, verarbeitet den Text und spricht die Antwort.
+  - In v3 sind die Helfer schon da (`core/ha.py → read_mailbox`, `clear_mailbox`), es fehlt nur die Schleife. Den Text kann man wie im `--test`-Modus per `send_client_content` in eine Live-Session injizieren.
+  - Offen: Soll die Antwort gesprochen werden oder nur stumm erscheinen? v2 hatte dafür `<SILENT>`. Wenn der User nicht zu Hause ist, eher per Push aufs Handy.
+
+- [ ] **Letzte Antwort für das HA-Dashboard (`sensor.jarvis_last_response`).**
+  - v2: `ha.set_state("sensor.jarvis_last_response", text[:250], attributes={"full_text": text})` nach jeder Antwort.
+  - In v3 gibt es `core/ha.py → set_state` schon. Nur bei `turn_complete` mit dem Output-Transkript aufrufen.
+
+- [ ] **HA-Verlauf abfragen (`get_ha_history`).** Fragen wie „Wann war ich gestern zu Hause?" oder „Wie lange lief der Receiver?".
+  - v2: `services/ha.py → get_ha_history` (`/api/history/period`, UTC→Lokalzeit, max. 100 Events pro Entity mit Warnhinweis bei Kürzung).
+
+- [ ] **Outdoor-Routen (Komoot).**
+  - v2: `services/navigation.py → handle_route_planning` (Nominatim-Geocoding, OSRM-Fahrradzeit, Komoot-URL für rennrad/fahrrad/mtb/wandern/joggen, Start = Zuhause). Danach `send_to_phone` mit dem Link.
+
+- [ ] **Jarvis per Sprache neu starten (`restart_service`).**
+  - v2: `services/system.py → restart_service` (`sleep 5; sudo systemctl restart jarvis.service`, detached). Trivial zu portieren.
+
+- [ ] **Standorte der Personen mit Adresse.** In v3 landen die `person.*`-Entities zwar mit lat/lon im Prompt, aber ohne lesbare Adresse.
+  - v2: `services/ha.py → get_all_person_locations` und `get_entity_address` (holt die zugehörige `geocoded_location` per HA-Template).
+
+- [ ] **Speicher-Eintrag löschen.** In v3 gibt es nur append/replace. „Vergiss X" klappt höchstens über replace mit einem leeren Text.
+  - Vorlage: `Jarvis-Project/services/memory.py → delete_memory`. In v3 einfach eine Aktion `delete` in `edit_core_memory` ergänzen.
+
+## P3 – Experimentell bzw. schwer
+
+- [ ] **Autonome Wakeups (Jarvis meldet sich von selbst).**
+  - v2: `system.schedule_wakeup` (zeitbasiert), `ha.create_ha_automation` (zustands-, numerisch- oder geo-basiert, legt eine HA-Automation an, die `INTERNAL_WAKEUP_TRIGGER|id|grund` in die Mailbox schreibt), `ha.delete_ha_automation`, ein Tageslimit und eigene Prompt-Regeln (nachts nicht ansprechen, lieber Push).
+  - **Voraussetzung:** Remote-Mailbox (P2). Hinweis: In v2 war das zuletzt per `WAKEUP_COUNT < 0` deaktiviert.
+
+- [ ] **Nächtliches „Dreaming" und Routine-Analyse.**
+  - v2: `services/routine.py → analyze_routine` (HA-Verlauf der letzten 48 h für Handy, Schlaf, Receiver, Person und Zonen, POI-Auflösung per Google-Suche, Tages-Journal in Mem0) und `get_habits_summary` (LLM abstrahiert daraus Gewohnheiten). Wurde täglich um 4 Uhr ausgelöst. Die Gewohnheiten landeten im System-Prompt.
+  - **Nicht wieder mit Mem0, ChromaDB und LiteLLM auf dem Pi bauen** (siehe Hinweise unten). Besser serverseitig oder über das Basic-Memory-MCP (`bm_write`, `bm_search`), das schon angebunden ist.
+
+- [ ] **Maps-/POI-Suche** („Nächster Italiener?", „Hat der Baumarkt offen?").
+  - v2: `services/google.py → perform_maps_search` (Gemini mit `googleMaps`-Grounding und `latLng` = Zuhause). Websuche ist in v3 über SearXNG abgedeckt, Maps nicht.
+
+- [ ] **Python-Code ausführen** (Berechnungen, API-Abfragen).
+  - v2: `services/system.py → run_local_python` (`exec` mit `requests`, `math`, `datetime`). Großteils durch Firecrawl und SearXNG ersetzt. Falls doch gewünscht: prüfen, ob das Live-Modell das eingebaute Code-Execution-Tool unterstützt, statt `exec` auf dem Pi.
+
+- [ ] **Token- und Kosten-Logging pro Session.**
+  - v2: `core/live.py` summiert `usage_metadata` und gibt am Ende geschätzte € aus.
+
+- [ ] **Semantische Archivsuche** statt Stichwortsuche. v2 nutzte Mem0-Vektorsuche, v3 macht Substring-Matching. Option: Archiv in Basic Memory schreiben und `bm_search` nutzen.
+
+## Abgedeckt (kein Port nötig)
+
+- Kalender lesen/erstellen → MCP `google_get_events` / `google_manage_event`
+- Websuche → MCP `searxng_search` (+ `firecrawl_scrape`)
+- Geräte schalten, Media-Steuerung, Gerätestatus → `call_ha_service` + Live-States im Prompt
+- Systemlautstärke → `set_speaker_volume`
+- Fakten merken → `edit_core_memory`
+- API-Key-Rotation → `GeminiLiveProvider.rotate_key`
+- Neu in v3 (gab es in v2 nicht): Gmail, Google Tasks, Fitbit/Google Health, Basic Memory, HiFiBerry-Library
+
+---
+
+## Hinweise für die Umsetzung
+
+- **Neues Tool in v3:** `types.FunctionDeclaration` in `core/tools.py → FUNCTION_DECLARATIONS` ergänzen, die Funktion in `TOOL_IMPLEMENTATIONS` eintragen und eine Regel im Prompt in `core/llm.py` hinzufügen.
+- **Lokale Tools blockieren die Audio-Schleife:** `_receive_audio_loop` ruft `tools.execute_tool()` synchron auf. Langsame Tools (HA-Verlauf, Routen, Wetter) besser mit `await asyncio.to_thread(tools.execute_tool, name, args)` ausführen.
+- **RAM ist knapp:** Der Pi Zero 2W hat 463 MB, Jarvis belegt davon schon ~60 % und der Pi swappt. Heute hat er mehrere Minuten nicht auf SSH reagiert und lief danach frisch gebootet. Also keine schweren Libraries wie Mem0, ChromaDB oder LiteLLM zurückholen, sondern Rechenarbeit auf Server/MCP auslagern.
+- **Viele MCP-Tools in jeder Session:** Gateway (32) + Basic Memory (12) + HiFiBerry (30+) + lokale Tools ergeben ~80 Tool-Definitionen pro Live-Session. Das kostet Tokens und Latenz und verschlechtert die Tool-Auswahl. Eine Allow- oder Denylist pro Server in `core/mcp_config.json` lohnt sich. HiFiBerry hat außerdem destruktive Tools (`library_delete_album`, `library_delete_track`), die Gemini besser nicht sehen sollte.
+- **Daten aus v2 retten:** Auf dem Pi liegen in `~/jarvis/memories/` (8,2 MB) das Mem0-Archiv aller v2-Gespräche (`paul_archive`), das Tages-Journal (`paul_journal`) sowie `core.md` und `episodic.md`. Das vor dem Löschen von `~/jarvis` sichern und gegebenenfalls nach `archive.jsonl` oder Basic Memory migrieren (`migrate_memories.py` als Startpunkt).

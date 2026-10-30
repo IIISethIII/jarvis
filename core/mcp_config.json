@@ -1,0 +1,7 @@
+{
+  "servers": {
+    "fastmcp-gateway": {"url": "http://mcp.local/sse", "type": "sse"},
+    "basic-memory": {"url": "http://memory.local/sse", "type": "sse"},
+    "hifiberry": {"url": "http://192.168.2.222/api/acr-webmcp/mcp", "type": "stateless"}
+  }
+}
