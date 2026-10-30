@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 try:
@@ -6,6 +7,9 @@ try:
 except ImportError:
     HAS_SMBUS = False
 
+# GPIO of the Voice Bonnet button; set JARVIS_BUTTON_PIN to another pin, or to "none" to disable it
+DEFAULT_BUTTON_PIN = 23
+
 class BonnetHardware:
     # KTD2027B I2C LED Driver for Voice Bonnet V2
     I2C_ADDR = 0x31
@@ -13,11 +17,13 @@ class BonnetHardware:
     REG_CH_ENABLE = 0x04
     REG_BRIGHT_R = 0x06  
 
-    def __init__(self, button_pin=23):
+    def __init__(self, button_pin=None):
         self._pulse_thread = None
         self._stop_event = threading.Event()
-        self._current_enable_state = None 
-        
+        self._current_enable_state = None
+        self._flash_until = 0.0
+        self.button = self._init_button(button_pin)
+
         self.bus = None
         if HAS_SMBUS:
             try:
@@ -29,6 +35,44 @@ class BonnetHardware:
                 self.bus = None
         else:
             print("[Mock LED] smbus2 not installed.")
+
+    @staticmethod
+    def _init_button(button_pin):
+        """Returns a gpiozero Button, or None if no button is configured or GPIO is unavailable."""
+        if button_pin is None:
+            env_pin = os.getenv("JARVIS_BUTTON_PIN", str(DEFAULT_BUTTON_PIN)).strip().lower()
+            if env_pin in ("", "none", "off"):
+                print("[Button] Disabled via JARVIS_BUTTON_PIN.")
+                return None
+            button_pin = int(env_pin)
+        try:
+            from gpiozero import Button
+            # bounce_time filters contact chatter; the Bonnet button pulls the pin low when pressed
+            return Button(button_pin, bounce_time=0.05)
+        except Exception as e:
+            print(f"[Button] Not available on GPIO {button_pin}: {e}")
+            return None
+
+    def set_button_handler(self, callback):
+        """Calls callback() on every button press (from a gpiozero background thread)."""
+        if self.button:
+            self.button.when_pressed = callback
+
+    def _is_flashing(self):
+        return time.time() < self._flash_until
+
+    def flash(self, r, g, b, duration=0.5):
+        """Shows a colour briefly, then turns the LED off. Blocks for `duration`;
+        set_color/turn_off calls from other threads are ignored meanwhile."""
+        if not self.bus:
+            print(f"[Mock LED] flash ({r}, {g}, {b})")
+            return
+        self.stop_effect()
+        self._flash_until = time.time() + duration
+        self._set_led(r, g, b)
+        time.sleep(duration)
+        self._flash_until = 0.0
+        self.stop_effect()
 
     def _set_channels(self, state):
         if self.bus and self._current_enable_state != state:
@@ -50,7 +94,9 @@ class BonnetHardware:
             "off": (0, 0, 0)
         }
         r, g, b = colors.get(color_name.lower(), (0,0,0))
-        
+
+        if self._is_flashing():
+            return
         if not self.bus:
             print(f"[Mock LED] {color_name} (blink={blink})")
             return
@@ -101,8 +147,11 @@ class BonnetHardware:
             except: pass
 
     def turn_off(self):
+        if self._is_flashing():
+            return
         self.stop_effect()
-        
+
     def close(self):
         self.stop_effect()
+        if self.button: self.button.close()
         if self.bus: self.bus.close()

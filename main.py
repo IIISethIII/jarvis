@@ -3,6 +3,7 @@ import time
 import asyncio
 import os
 import math
+import random
 import struct
 from core.hardware import BonnetHardware
 from core.audio import AudioManager, init_audio_settings
@@ -36,7 +37,20 @@ def main():
 
     audio_manager = AudioManager()
     llm_provider = GeminiLiveProvider()
-    
+
+    def on_button_press():
+        # Runs in a gpiozero thread. Half-duplex audio means this is the only way to interrupt Jarvis.
+        if llm_provider.is_active:
+            print("\n[Button] Pressed: cancelling session.", flush=True)
+            llm_provider.request_cancel()
+            audio_manager.stop_playback()
+            hardware.flash(255, 0, 0, duration=0.5)
+        else:
+            print("[Button] Pressed while idle.", flush=True)
+            hardware.flash(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+
+    hardware.set_button_handler(on_button_press)
+
     if args.test:
         print("[Boot] Running in TEST mode. Waiting for mock trigger...")
         trigger_file = "trigger.tmp"

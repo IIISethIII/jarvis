@@ -7,3 +7,6 @@ requests
 python-dotenv
 # Optional: RGB LED of the AIY Voice Bonnet V2 (falls back to mock LEDs without it)
 smbus2
+# Optional: button of the AIY Voice Bonnet V2 (lgpio is the gpiozero backend that works on current Pi kernels)
+gpiozero
+lgpio

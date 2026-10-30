@@ -1,5 +1,6 @@
 import asyncio
 import os
+import threading
 import time
 import datetime
 from google import genai
@@ -21,6 +22,14 @@ class GeminiLiveProvider:
         self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
         self.model_name = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.session = None
+        # Set from other threads (hardware button) to end the running session
+        self.cancel_event = threading.Event()
+        self.is_active = False
+
+    def request_cancel(self):
+        """Ends the running session (thread-safe). Does nothing when idle."""
+        if self.is_active:
+            self.cancel_event.set()
 
     def rotate_key(self):
         """Rotates to the next Gemini API key in the pool."""
@@ -32,6 +41,18 @@ class GeminiLiveProvider:
 
     async def connect(self, audio_manager, hardware, memory_text="", dynamic_tools=None, mock_text=None, sfx=None):
         """Connects to the Live API and handles bidirectional audio streaming."""
+        self.cancel_event.clear()
+        self.is_active = True
+        try:
+            await self._connect(audio_manager, hardware, memory_text, dynamic_tools, mock_text, sfx)
+        finally:
+            if self.cancel_event.is_set():
+                # Drop speech that arrived between the button press and the session closing
+                audio_manager.stop_playback()
+            self.is_active = False
+            self.cancel_event.clear()
+
+    async def _connect(self, audio_manager, hardware, memory_text, dynamic_tools, mock_text, sfx):
         now_dt = datetime.datetime.now()
         weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
         time_str = f"{weekdays[now_dt.weekday()]}, {now_dt.strftime('%d.%m.%Y %H:%M:%S')}"
@@ -229,7 +250,13 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                 
                 # Watchdog loop to catch deadlocks during connection closing
                 while not connect_task.done():
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(0.2)
+                    if self.cancel_event.is_set() and self.session is None:
+                        # Cancelled while still connecting: there are no session tasks to end gracefully yet
+                        print("\n[LLM] Cancelled before the session was established.")
+                        state['is_closed'] = True
+                        connect_task.cancel()
+                        break
                     if time.time() - state['last_activity'] > 30.0:
                         print("\n[LLM Watchdog] 30s without activity (deadlock?). Force-cancelling connection!")
                         state['is_closed'] = True
@@ -272,10 +299,13 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             raise last_error
 
     async def _inactivity_loop(self, state):
-        """Monitors activity and closes the connection after 15s of silence."""
+        """Monitors activity and closes the connection after 15s of silence or when cancelled (button)."""
         import time
         while not state.get('is_closed', False):
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(0.2)
+            if self.cancel_event.is_set():
+                print("\n[LLM] Session cancelled by button.", flush=True)
+                return
             if time.time() - state['last_activity'] > 15.0:
                 print("\n[LLM] 15 seconds of silence detected. Closing session to save resources...")
                 return

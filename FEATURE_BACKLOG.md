@@ -36,10 +36,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 - [ ] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet. Die Regel in `core/llm.py` (KONVERSATIONSSTEUERUNG) und die Tool-Beschreibung in `core/tools.py` enger fassen: nur bei einem klaren Abschluss, bei unklaren Fragmenten still bleiben. Das Sessionende per 15-s-Inaktivität reicht sonst.
 
-- [ ] **Hardware-Button ist nicht verdrahtet.** `BonnetHardware(button_pin=23)` wird angelegt, aber kein Handler gesetzt.
-  - v2 (`main.py → on_button_press`): Ein Druck stoppt einen klingelnden Alarm bzw. löscht Timer. Läuft eine Session, wird sie abgebrochen (LED kurz rot). Im Idle blinkt die LED in einer zufälligen Farbe.
-  - In v3 ist das wichtiger als in v2: Das Audio ist Half-Duplex, das Mikro wird während der Wiedergabe verworfen (`AudioManager.get_audio_chunk`). Per Stimme kann man Jarvis also nicht unterbrechen, **der Button ist der einzige Weg dafür**.
-  - Umsetzung: Flag `cancel_requested`, das `_send_audio_loop` oder `_inactivity_loop` prüft und dann die Session beendet. Dazu `audio_manager.stop_playback()`.
+- [x] **Hardware-Button verdrahtet.** Ein Druck während einer Session bricht sie ab (Wiedergabe stoppt, LED kurz rot). Im Idle blinkt die LED kurz in einer zufälligen Farbe. Umgesetzt über `GeminiLiveProvider.request_cancel()` (`cancel_event`, geprüft in `_inactivity_loop` bzw. beim Verbindungsaufbau). Pin per `JARVIS_BUTTON_PIN`, Backend `gpiozero` + `lgpio` (RPi.GPIO kann auf Kernel 6.12 keine Flanken erkennen). Wenn es Timer gibt, soll der Button auch einen klingelnden Alarm stoppen (siehe P1).
 
 ## P1 – Alltagsfeatures mit hohem Nutzen
 
