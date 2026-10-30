@@ -16,7 +16,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 ## Was v3 schon kann
 
 - Wake-Word „Hey Jarvis" (openWakeWord), Mikrofon-Watchdog (Timeout, Rapid-Fire, Stille, Queue-Stau)
-- Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach Stille (Timer ab Ende der Sprachausgabe, unbeantwortete Sprache zählt nur begrenzt, kürzer bei laufender Musik)
+- Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach Stille (Timer ab Ende der Sprachausgabe, unbeantwortete Sprache zählt nur begrenzt)
 - LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
 - Smart Home: generisches `call_ha_service` + alle HA-States und -Services im System-Prompt
 - `set_speaker_volume`, `get_pi_temperature`, `end_conversation`

@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 from dotenv import load_dotenv
 
@@ -10,15 +9,9 @@ class HomeAssistant:
         self.ha_url = os.getenv("HA_URL")
         self.ha_token = os.getenv("HA_TOKEN")
         
-        self.enabled = bool(self.ha_url and self.ha_token)
-        if not self.enabled:
+        if not self.ha_url or not self.ha_token:
             print("[Warning] HA_URL or HA_TOKEN not set in .env. HA integration will fail.")
-
-        # Players whose playback counts as background audio. Empty = every media_player, "none" = off.
-        players_env = os.getenv("JARVIS_MEDIA_PLAYERS", "").strip()
-        self.media_watch = self.enabled and players_env.lower() != "none"
-        self.media_players = [p.strip() for p in players_env.split(',') if p.strip()] if self.media_watch else []
-
+            
         self.headers = {
             "Authorization": f"Bearer {self.ha_token}",
             "Content-Type": "application/json"
@@ -81,23 +74,7 @@ class HomeAssistant:
             return []
 
     # --- High Level Helper Methods ---
-
-    def media_playing(self):
-        """True if a watched media player is playing. False when HA or media watching is off, or on errors."""
-        if not self.media_watch:
-            return False
-        if self.media_players:
-            template = f"{{{{ {json.dumps(self.media_players)} | select('is_state', 'playing') | list | count }}}}"
-        else:
-            template = "{{ states.media_player | selectattr('state', 'eq', 'playing') | list | count }}"
-        try:
-            # One template call instead of fetching all states: the Pi polls this every few seconds
-            r = self.session.post(f"{self.ha_url}/api/template", json={"template": template}, timeout=3)
-            r.raise_for_status()
-            return int(r.text.strip() or 0) > 0
-        except (requests.exceptions.RequestException, ValueError) as e:
-            print(f"[HA Error] media_playing failed: {e}")
-            return False
+    
 
 
     def read_mailbox(self, entity_id="input_text.jarvis_chat"):

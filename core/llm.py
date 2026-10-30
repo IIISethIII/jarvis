@@ -26,9 +26,8 @@ class GeminiLiveProvider:
         # Set from other threads (hardware button) to end the running session
         self.cancel_event = threading.Event()
         self.is_active = False
-        # Session end: seconds of silence after Jarvis spoke (shorter while media plays), see _close_reason
+        # Session end: seconds of silence after Jarvis spoke, see _close_reason
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
-        self.idle_timeout_media = float(os.getenv("JARVIS_IDLE_TIMEOUT_MEDIA", "8"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
 
     def request_cancel(self):
@@ -203,7 +202,6 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             'jarvis_parts': [],
             'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
             'last_user_speech': 0.0,  # last input transcript; only counts as activity once Gemini answers
-            'media_playing': False,
         }
 
         async def _do_connect(client_instance):
@@ -327,7 +325,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
         idle = self._idle_seconds(state, audio_manager)
         if idle <= 0:
             return None
-        timeout = self.idle_timeout_media if state['media_playing'] else self.idle_timeout
+        timeout = self.idle_timeout
         deadline = timeout
         heard_at = idle - (time.time() - state['last_user_speech'])  # seconds into the silence; < 0 = answered
         if heard_at > 0:
@@ -335,29 +333,16 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             deadline = min(timeout + self.speech_grace, max(timeout, heard_at + grace))
         if idle <= deadline:
             return None
-        media = ", media playing" if state['media_playing'] else ""
         unanswered = ", user speech unanswered" if heard_at > 0 else ""
-        return f"{idle:.0f}s without activity (timeout {timeout:.0f}s{media}{unanswered})"
+        return f"{idle:.0f}s without activity (timeout {timeout:.0f}s{unanswered})"
 
     async def _inactivity_loop(self, state, audio_manager):
         """Closes the connection once the user stopped talking to Jarvis (see _close_reason) or when cancelled (button)."""
-        from core.tools import ha_client
-        media_poll = None
-        next_media_poll = 0.0
         while not state.get('is_closed', False):
             await asyncio.sleep(0.2)
             if self.cancel_event.is_set():
                 print("\n[LLM] Session cancelled by button.", flush=True)
                 return
-            # Not awaited, so a slow HA never delays the cancel check; media_playing() never raises
-            if media_poll is not None and media_poll.done():
-                if media_poll.result() != state['media_playing']:
-                    state['media_playing'] = media_poll.result()
-                    print(f"[LLM] Media {'playing' if state['media_playing'] else 'stopped'}: shorter idle timeout {'on' if state['media_playing'] else 'off'}.", flush=True)
-                media_poll = None
-            if media_poll is None and ha_client.media_watch and time.time() >= next_media_poll:
-                media_poll = asyncio.ensure_future(asyncio.to_thread(ha_client.media_playing))
-                next_media_poll = time.time() + 5.0
             reason = self._close_reason(state, audio_manager)
             if reason:
                 print(f"\n[LLM] {reason}. Closing session to save resources...", flush=True)
