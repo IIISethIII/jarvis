@@ -353,10 +353,19 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
         import time
         import numpy as np
         last_print = time.time()
+        last_send = time.time()
         try:
             while not state.get('is_closed', False):
                 await asyncio.sleep(0.01)
-                chunks = []
+                if audio_manager.is_playing and time.time() - last_send >= 0.1:
+                    # Half-duplex drops the mic while Jarvis speaks. Fill that time with silence so the
+                    # server sees a continuous stream instead of a long gap before the next utterance.
+                    n_samples = int(min(time.time() - last_send, 0.5) * 16000)
+                    await session.send_realtime_input(
+                        audio=types.Blob(data=bytes(2 * n_samples), mime_type="audio/pcm;rate=16000")
+                    )
+                    last_send = time.time()
+                chunks = []  # while playing, get_audio_chunk drains the mic queue and returns None
                 while True:
                     c = audio_manager.get_audio_chunk(timeout=0)
                     if c is None:
@@ -383,6 +392,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                     await session.send_realtime_input(
                         audio=types.Blob(data=pcm_data, mime_type="audio/pcm;rate=16000")
                     )
+                    last_send = time.time()
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -418,11 +428,21 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         print(f"\n[LLM] Received GoAway from Gemini server: {go_away}")
                         return
 
+                    # Server-side turn detection, logged to debug follow-ups that are never picked up
+                    for signal in ('voice_activity', 'voice_activity_detection_signal'):
+                        value = getattr(response, signal, None)
+                        if value is not None:
+                            print(f"[LLM] Server {signal}: {value}", flush=True)
+
                     server_content = getattr(response, 'server_content', None)
                     if server_content is not None:
                         interrupted = getattr(server_content, 'interrupted', None)
                         turn_complete = getattr(server_content, 'turn_complete', None)
-                        
+                        if interrupted or turn_complete or getattr(server_content, 'waiting_for_input', None):
+                            reason = getattr(server_content, 'turn_complete_reason', None)
+                            print(f"[LLM] Server: interrupted={bool(interrupted)} turn_complete={bool(turn_complete)} "
+                                  f"reason={reason} waiting_for_input={getattr(server_content, 'waiting_for_input', None)}", flush=True)
+
                         if interrupted:
                             self._flush_turn(state)
                             state['last_activity'] = time.time()
