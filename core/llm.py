@@ -301,10 +301,11 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
     @staticmethod
     def _idle_seconds(state, audio_manager):
         """Seconds of silence: counted from the end of playback, frozen while speech plays or a tool runs."""
-        # Gemini streams audio faster than real time, so the last chunk arrives long before playback ends
-        if audio_manager.is_busy() or state.get('tool_running', False):
+        # Gemini streams audio faster than real time, so the last chunk arrives long before playback ends.
+        # Only speech counts: the looped thinking SFX (~38 s queued) must not keep the session open.
+        if audio_manager.is_playing or state.get('tool_running', False):
             return 0.0
-        return time.time() - max(state['last_activity'], audio_manager.last_play_time)
+        return time.time() - max(state['last_activity'], audio_manager.last_speech_time)
 
     async def _inactivity_loop(self, state, audio_manager):
         """Monitors activity and closes the connection after 15s of silence or when cancelled (button)."""

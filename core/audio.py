@@ -93,6 +93,7 @@ class AudioManager:
         
         self.is_playing = False
         self.last_play_time = 0.0
+        self.last_speech_time = 0.0  # end of the last spoken (TTS) chunk; SFX don't count
         self.playback_queue = queue.Queue()
         # Start background playback thread
         self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
@@ -131,7 +132,9 @@ class AudioManager:
                 self.out_stream.write(chunk)
             except Exception as e:
                 print(f"[Playback] Error: {e}")
-            
+            if is_tts:
+                self.last_speech_time = time.time()
+
             if self.playback_queue.empty():
                 self.last_play_time = time.time()
                 self.is_playing = False
@@ -171,10 +174,6 @@ class AudioManager:
     def play_chunk(self, pcm_data, is_tts=True):
         """Plays raw PCM data through the speaker."""
         self.playback_queue.put((pcm_data, is_tts))
-
-    def is_busy(self):
-        """True while speech is playing or still queued for playback."""
-        return self.is_playing or not self.playback_queue.empty()
 
     def stop_playback(self):
         """Immediately stops current playback."""
