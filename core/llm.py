@@ -217,7 +217,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                 
                 send_task = asyncio.create_task(self._send_audio_loop(audio_manager, session, state))
                 receive_task = asyncio.create_task(self._receive_audio_loop(audio_manager, session, hardware, state, sfx))
-                inactivity_task = asyncio.create_task(self._inactivity_loop(state))
+                inactivity_task = asyncio.create_task(self._inactivity_loop(state, audio_manager))
                 
                 done, pending = await asyncio.wait(
                     [send_task, receive_task, inactivity_task],
@@ -257,7 +257,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         state['is_closed'] = True
                         connect_task.cancel()
                         break
-                    if time.time() - state['last_activity'] > 30.0:
+                    if self._idle_seconds(state, audio_manager) > 30.0:
                         print("\n[LLM Watchdog] 30s without activity (deadlock?). Force-cancelling connection!")
                         state['is_closed'] = True
                         connect_task.cancel()
@@ -298,15 +298,22 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             # Re-raise so caller is aware after trying all keys
             raise last_error
 
-    async def _inactivity_loop(self, state):
+    @staticmethod
+    def _idle_seconds(state, audio_manager):
+        """Seconds of silence: counted from the end of playback, frozen while speech plays or a tool runs."""
+        # Gemini streams audio faster than real time, so the last chunk arrives long before playback ends
+        if audio_manager.is_busy() or state.get('tool_running', False):
+            return 0.0
+        return time.time() - max(state['last_activity'], audio_manager.last_play_time)
+
+    async def _inactivity_loop(self, state, audio_manager):
         """Monitors activity and closes the connection after 15s of silence or when cancelled (button)."""
-        import time
         while not state.get('is_closed', False):
             await asyncio.sleep(0.2)
             if self.cancel_event.is_set():
                 print("\n[LLM] Session cancelled by button.", flush=True)
                 return
-            if time.time() - state['last_activity'] > 15.0:
+            if self._idle_seconds(state, audio_manager) > 15.0:
                 print("\n[LLM] 15 seconds of silence detected. Closing session to save resources...")
                 return
 
@@ -437,6 +444,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                     if tool_call is not None:
                         state['last_activity'] = time.time()
                         state['is_thinking'] = False
+                        state['tool_running'] = True
                         print(f"[Debug] Received tool_call: {tool_call}")
                         hardware.set_color("blue", blink=True) # Pulsing blue = thinking/executing
                         if sfx:
@@ -473,6 +481,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         
                         print("[Debug] Sending tool responses back...")
                         await session.send_tool_response(function_responses=function_responses)
+                        state['tool_running'] = False
+                        state['last_activity'] = time.time()
                         hardware.set_color("blue", blink=True) # Back to speaking/waiting
 
         except asyncio.CancelledError:

@@ -92,6 +92,7 @@ class AudioManager:
         )
         
         self.is_playing = False
+        self.last_play_time = 0.0
         self.playback_queue = queue.Queue()
         # Start background playback thread
         self.playback_thread = threading.Thread(target=self._playback_worker, daemon=True)
@@ -170,6 +171,10 @@ class AudioManager:
     def play_chunk(self, pcm_data, is_tts=True):
         """Plays raw PCM data through the speaker."""
         self.playback_queue.put((pcm_data, is_tts))
+
+    def is_busy(self):
+        """True while speech is playing or still queued for playback."""
+        return self.is_playing or not self.playback_queue.empty()
 
     def stop_playback(self):
         """Immediately stops current playback."""
