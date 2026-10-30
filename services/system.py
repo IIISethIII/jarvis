@@ -18,12 +18,13 @@ def schedule_wakeup(minutes, reason="Routine Check"):
         minutes = int(minutes)
         if minutes < 1: return "Minuten müssen >= 1 sein."
         
-        target_time = time.time() + (minutes * 60)
-        state.NEXT_WAKEUP = target_time
+        now = datetime.datetime.now()
+        target_dt = now + datetime.timedelta(minutes=minutes)
+        
+        state.NEXT_WAKEUP = target_dt.timestamp()
         state.WAKEUP_REASON = reason
         
-        dt = datetime.datetime.fromtimestamp(target_time)
-        return f"Ich werde um {dt.strftime('%H:%M')} Uhr wieder aufwachen. Grund: {reason}"
+        return f"Ich werde um {target_dt.strftime('%H:%M')} Uhr wieder aufwachen. Grund: {reason}"
     except Exception as e:
         return f"Fehler beim Planen: {e}"
 

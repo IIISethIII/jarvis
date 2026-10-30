@@ -51,7 +51,7 @@ class RoutineTracker:
 
         # 2. Fetch History (last 2 Days for daily chronologies)
         days_back = 2
-        now = datetime.datetime.now()
+        now = datetime.datetime.now().astimezone()
         start_time = now - datetime.timedelta(days=days_back)
         
         print(f" [Routine] Fetching history for {len(relevant_eids)} entities since {start_time}...")
@@ -351,7 +351,7 @@ class RoutineTracker:
                 if hasattr(memory, 'memory_client') and memory.memory_client:
                     for obs in observations:
                         print(f"   [Routine] Speichere Memory: {obs}")
-                        memory.memory_client.add(obs, user_id="paul")
+                        memory.memory_client.add(obs, user_id="paul_journal")
                 
                 return f"Routine Analysis Complete. {len(observations)} observations saved to Mem0."
             else:
@@ -362,17 +362,16 @@ class RoutineTracker:
 
     def get_habits_summary(self):
         """
-        Returns a string representation of learned habits by searching Mem0.
-        To avoid high latency during the prompt generation, we do a quick 
-        broad search on 'Tagesablauf Routine Gewohnheiten' or keep it lightweight.
+        Fetches the recent 14-20 days of detailed daily logs from the 'paul_journal'
+        and uses Gemini to abstract them into generalized, timeless habits.
         """
         from jarvis.services import memory
         if not hasattr(memory, 'memory_client') or not memory.memory_client:
             return "Noch keine Gewohnheiten gelernt."
             
         try:
-            hits = []
-            results = memory.memory_client.search(query="Tagesablauf Routine Gewohnheiten", user_id="paul", limit=5)
+            # Holen der detaillierten täglichen Journal-Logs
+            results = memory.memory_client.get_all(user_id="paul_journal")
             if isinstance(results, dict) and 'results' in results:
                 results_list = results['results']
             elif isinstance(results, dict) and 'memories' in results:
@@ -380,19 +379,67 @@ class RoutineTracker:
             else:
                 results_list = results
 
+            if not results_list:
+                # Fallback auf das alte Profil für die Übergangszeit
+                results_fallback = memory.memory_client.search(query="Tagesablauf Routine", user_id="paul", limit=14)
+                if isinstance(results_fallback, dict) and 'results' in results_fallback:
+                    results_list = results_fallback['results']
+                elif isinstance(results_fallback, dict) and 'memories' in results_fallback:
+                    results_list = results_fallback['memories']
+                else:
+                    results_list = results_fallback
+                    
+            observations = []
             for res in results_list:
                 if isinstance(res, dict):
                     memory_text = res.get('memory', '')
                 else:
                     memory_text = getattr(res, 'memory', '')
                 if memory_text:
-                    hits.append(f"- {memory_text}")
+                    observations.append(memory_text)
             
-            if hits:
-                return "\n".join(hits)
-            return "Wenig Routinedaten."
+            if not observations:
+                return "Wenig Routinedaten im Journal."
+
+            # Wir beschränken uns auf die letzten 20 Observations (ca. die letzten 10-14 Tage)
+            recent_obs = "\n".join([f"- {o}" for o in observations[-20:]])
+
+            # LLM Abstraction zur Isolierung purer Gewohnheiten (Daten filtern)
+            prompt = f"""
+            Du analysierst die aufgezeichneten täglichen Erlebnisse und Routinen des Users aus den letzten 14 Tagen.
+            
+            JOURNAL LOGS (Historische Daten):
+            {recent_obs}
+            
+            TASK:
+            1. Abstrahiere diese spezifischen Logs zu allgemeinen, beständigen Gewohnheiten und Routinen des Users.
+            2. Finde Regelmäßigkeiten (z.B. Aufstehzeiten, Verlassen des Hauses, Sport-Tage etc.).
+            3. WICHTIG: Entferne JEGLICHE spezifische historische Datumsangabe (kein "Am 22.02.", "Gestern" etc.).
+            4. Die Ausgabe muss generisch und andauernd gültig sein (z.B. "Steht meistens gegen 09:00 Uhr auf" oder "Geht nachmittags bouldern").
+            5. Output strictly a JSON object mit einem Array "abstract_habits", das diese generischen Sätze (jeweils 1 Satz) enthält.
+            """
+
+            url = config.get_gemini_url()
+            payload = {
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"responseMimeType": "application/json"}
+            }
+            resp = session.post(url, json=payload, timeout=45)
+            
+            if resp.status_code == 200:
+                result_json_str = resp.json()['candidates'][0]['content']['parts'][0]['text']
+                result_data = json.loads(result_json_str)
+                habits = result_data.get("abstract_habits", [])
+                
+                if habits:
+                     return "\n".join([f"- {h}" for h in habits])
+                else:
+                     return "Keine klaren wiederkehrenden Muster ableitbar."
+            else:
+                 return f"LLM Fehler bei der Abstraktion: {resp.status_code}"
+                 
         except Exception as e:
-            return f"Fehler beim Abrufen von Habits: {e}"
+            return f"Fehler bei der Habit-Abstraktion: {e}"
 
 def check_background_routine():
     """

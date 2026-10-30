@@ -7,7 +7,6 @@ from jarvis.services import routine
 from mem0 import Memory
 
 # --- INITIALIZE MEM0 ---
-# --- INITIALIZE MEM0 ---
 mem0_config = {
     "vector_store": {
         "provider": "chroma",
@@ -19,9 +18,7 @@ mem0_config = {
     "llm": {
         "provider": "litellm",
         "config": {
-            # Wir nutzen hier gemini-2.5-pro für Mem0s interne Logik, um 
-            # den "Error finding id" (Halluzinieren bei Flash) zu beheben!
-            "model": "gemini/gemini-2.5-pro",
+            "model": "gemini/gemini-2.5-flash",
             "temperature": 0.1,
             "max_tokens": 8000,
         }
@@ -150,10 +147,6 @@ def save_memory_tool(text):
         memory_client.add(text, user_id="paul_core")
         return f"Wichtiger Fakt notiert: '{text}'."
     except Exception as e:
-        # Mem0 Bug workaround: If model hallucinates an ID, catch it gracefully
-        print(f" [Memory] Mem0 Add Error: {e}")
-        if "Error finding id" in str(e):
-            return f"Fehler beim Strukturieren (bekannter Bug), aber versuche es später beim Nightly Dream nochmal: {e}"
         return f"Fehler beim Speichern: {e}"
 
 def search_memory_tool(search_query):

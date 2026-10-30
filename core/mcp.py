@@ -1,7 +1,11 @@
 import asyncio
 import threading
+import logging
 from mcp import ClientSession
 from mcp.client.sse import sse_client
+
+# Unterdrücke die "Error in sse_reader" Logs vom MCP SDK bei Timeouts/Disconnects
+logging.getLogger("mcp.client.sse").setLevel(logging.CRITICAL)
 
 class MCPManager:
     def __init__(self):
@@ -32,7 +36,7 @@ class MCPManager:
         while True:
             try:
                 print(f"  [MCP] Verbinde mit {name} über {url}...")
-                async with sse_client(url) as (read, write):
+                async with sse_client(url, timeout=15.0) as (read, write):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         self.sessions[name] = session
@@ -41,6 +45,7 @@ class MCPManager:
                         # Blockiert endlos, hält den Kontext im selben Task offen, 
                         # bis die Verbindung abbricht oder der Task gecancelt wird
                         await asyncio.Event().wait()
+                        
                         
             except asyncio.CancelledError:
                 print(f"  [MCP] Task für {name} beendet.")
@@ -63,8 +68,14 @@ class MCPManager:
         for name in self.server_names:
             task = self.loop.create_task(self._server_loop(name))
             self.server_tasks[name] = task
-        # Kurze Wartezeit, um den Servern Zeit zum initialen Verbinden zu geben
-        await asyncio.sleep(2)
+            
+        import time
+        start_time = time.time()
+        # Warten, bis alle Server online sind (oder 15s Timeout)
+        while time.time() - start_time < 15.0:
+            if len(self.sessions) == len(self.server_names):
+                break
+            await asyncio.sleep(0.5)
 
     def start_sync(self):
         asyncio.run_coroutine_threadsafe(self._start_async(), self.loop).result()

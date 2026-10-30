@@ -11,8 +11,9 @@ import threading
 import multiprocessing
 import queue
 import pyaudio
-import pvporcupine
-import pvcobra
+import openwakeword
+import numpy as np
+from openwakeword.model import Model
 import os
 from jarvis.services.hardware import BonnetHardware
 from aiy.leds import Color, Pattern
@@ -47,7 +48,14 @@ def audio_worker(output_queue, frame_length, rate, channels):
     try:
         while True:
             pcm = stream.read(frame_length, exception_on_overflow=False)
-            output_queue.put(pcm)
+            try:
+                output_queue.put_nowait(pcm)
+            except queue.Full:
+                try:
+                    output_queue.get_nowait() # Drop oldest frame
+                    output_queue.put_nowait(pcm)
+                except:
+                    pass
     except: pass 
     finally:
         stream.close(); pa.terminate()
@@ -89,13 +97,13 @@ def fade_color(leds, start_color, end_color, duration=0.5):
         leds.update(leds.rgb_on((r, g, b)))
         time.sleep(delay)
 
-def flush_queue(q):
-    """Leert die Audio-Queue, damit wir kein Echo der eigenen TTS-Antwort verarbeiten."""
-    try:
-        while not q.empty():
-            q.get_nowait()
-    except queue.Empty:
-        pass
+def flush_queue(q, duration=0.1):
+    start = time.time()
+    while time.time() - start < duration:
+        try:
+            q.get(timeout=0.05)
+        except queue.Empty:
+            pass
 
 def main():
     def handle_sigterm(signum, frame):
@@ -111,11 +119,19 @@ def main():
     threading.Thread(target=timer.background_timer_check, daemon=True).start()
     last_dream_date = None
 
-    # Porcupine Init
+    # openWakeWord Init
     try:
-        porcupine = pvporcupine.create(access_key=config.PICOVOICE_KEY, keywords=[config.WAKE_WORD], sensitivities=[0.4])
-        # cobra = pvcobra.create(access_key=config.PICOVOICE_KEY)  # Deprecated in favor of Gemini Live API
-        frame_length = porcupine.frame_length
+        print("Lade openWakeWord Modell 'hey_jarvis'...")
+        
+        # 1. Hole alle Pfade der vorinstallierten Modelle
+        model_paths = openwakeword.get_pretrained_model_paths()
+        
+        # 2. Suche den Pfad heraus, der "hey_jarvis" im Dateinamen hat
+        jarvis_path = next(p for p in model_paths if 'hey_jarvis' in p)
+        
+        # 3. Lade das Modell mit dem korrekten absoluten Pfad
+        oww_model = Model(wakeword_model_paths=[jarvis_path])
+        frame_length = 1280 # Optimale Chunk-Größe für openWakeWord
     except Exception as e:
         print(f"Init Error: {e}"); return
 
@@ -209,11 +225,13 @@ def main():
                     pcm_chunk = audio_queue.get_nowait()
                     
                     # Prüfen auf Wake Word
-                    keyword_index = porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm_chunk))
-                    if keyword_index >= 0:
+                    audio_data = np.frombuffer(pcm_chunk, dtype=np.int16)
+                    prediction = oww_model.predict(audio_data)
+                    if max(prediction.values()) > 0.5:
                         print("\n--> INTERRUPT DETECTED!")
+                        oww_model.reset()
                         return True # Signalisiert: Sofort aufhören zu sprechen!
-            except:
+            except Exception as e:
                 pass
             return False
 
@@ -231,7 +249,7 @@ def main():
         
         leds.update(Color.BLUE)
         print(f"\nJarvis Online | Devices: {len(state.AVAILABLE_LIGHTS)}")
-        google.speak_text(leds, "Ich bin jetzt online.")
+        google.speak_text_gemini(leds, "Ich bin jetzt online.")
         leds.update(leds.rgb_off())
         flush_queue(audio_queue) # Start clean
         
@@ -264,7 +282,7 @@ def main():
                 
                 # B) Check Wakeup Time
                 if now_ts >= state.NEXT_WAKEUP:
-                    if state.WAKEUP_COUNT < 10:
+                    if state.WAKEUP_COUNT < 0: # TODO: Set to 3 for real use, currently disabled for testing
                         print(f"\n--> ⏰ AUTONOMOUS WAKEUP (Reason: {state.WAKEUP_REASON})")
                         state.WAKEUP_COUNT += 1
                         
@@ -379,36 +397,39 @@ def main():
                             flush_queue(audio_queue)
                             continue
 
-                        restore_volume()
-                        response = "Fehler."
                         try:
-                            hybrid_context = memory.get_hybrid_context(incoming_text)
-                            final_prompt = f"{hybrid_context}\n\nUSER TEXT INPUT:\n{incoming_text}\n\n(Antworte dem User.)"
-                            
-                            if state.CANCEL_REQUESTED: 
-                                response = "<SILENT>"
+                            restore_volume()
+                            response = "Fehler."
+                            try:
+                                hybrid_context = memory.get_hybrid_context(incoming_text)
+                                final_prompt = f"{hybrid_context}\n\nUSER TEXT INPUT:\n{incoming_text}\n\n(Antworte dem User.)"
+                                
+                                if state.CANCEL_REQUESTED: 
+                                    response = "<SILENT>"
+                                else:
+                                    response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=None, silent_mode=True)
+                                
+                                clean_resp = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
+                                memory.save_interaction(incoming_text, clean_resp)
+
+                            except Exception as e: 
+                                print(f" [Main Loop Error Text Mode] {e}")
+                                clean_resp = "Fehler bei der Textverarbeitung."
+
+                            if "<SILENT>" in clean_resp:
+                                clean_resp = clean_resp.replace("<SILENT>", "").strip()
+                                print(" [Output] <SILENT>")
                             else:
-                                response = llm.ask_gemini(leds, text_prompt=final_prompt, audio_data=None, silent_mode=True)
-                            
-                            clean_resp = response.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
-                            memory.save_interaction(incoming_text, clean_resp)
+                                if not state.CANCEL_REQUESTED:
+                                    google.speak_text(leds, clean_resp, interrupt_check=check_for_interruption)
 
-                        except Exception as e: 
-                            print(f" [Main Loop Error Text Mode] {e}")
-                            clean_resp = "Fehler bei der Textverarbeitung."
-
-                        if "<SILENT>" in clean_resp:
-                            clean_resp = clean_resp.replace("<SILENT>", "").strip()
-                            print(" [Output] <SILENT>")
-                        else:
-                            if not state.CANCEL_REQUESTED:
-                                google.speak_text(leds, clean_resp, interrupt_check=check_for_interruption)
-
-                        ha.set_state("sensor.jarvis_last_response", clean_resp[:250], attributes={"full_text": clean_resp})
-                        flush_queue(audio_queue)
-                        state.SESSION_OPEN_UNTIL = 0
-                        leds.update(leds.rgb_off())
-                        state.IS_PROCESSING = False
+                            ha.set_state("sensor.jarvis_last_response", clean_resp[:250], attributes={"full_text": clean_resp})
+                        finally:
+                            flush_queue(audio_queue, duration=2.5) # Wait and consume any TTS echo
+                            oww_model.reset()
+                            state.SESSION_OPEN_UNTIL = 0
+                            leds.update(leds.rgb_off())
+                            state.IS_PROCESSING = False
                         
                     else:
                         # FAST BRAIN AUDIO MODE (Two-Brain Hybrid Architecture)
@@ -422,7 +443,8 @@ def main():
                         
                         finally:
                             restore_volume()
-                            flush_queue(audio_queue)
+                            flush_queue(audio_queue, duration=2.5) # Wait and consume the SOUND_SLEEP echo
+                            oww_model.reset()
                             state.SESSION_OPEN_UNTIL = 0
                             leds.update(leds.rgb_off())
                             state.IS_PROCESSING = False
@@ -436,8 +458,17 @@ def main():
                 if time.time() - last_log_time > 10:
                     last_log_time = time.time()
 
-                if porcupine.process(struct.unpack_from("h" * porcupine.frame_length, pcm)) >= 0:
+                # 1. PCM Bytes in ein Numpy-Array umwandeln
+                audio_data = np.frombuffer(pcm, dtype=np.int16)
+                
+                # 2. Prediction abfragen
+                prediction = oww_model.predict(audio_data)
+                
+                # 3. Prüfen, ob der Score über unserem Schwellenwert liegt (z.B. 0.5)
+                # prediction sieht z.B. so aus: {'hey_jarvis_v0.1': 0.75}
+                if max(prediction.values()) > 0.5:
                     print("\n--> Wake Word Detected")
+                    oww_model.reset()
                     sfx.play(config.SOUND_WAKE, volume=1.0)
                     lower_volume()
                     if state.ALARM_PROCESS:
@@ -459,8 +490,6 @@ def main():
         except KeyboardInterrupt: pass
         finally:
             if audio_proc: audio_proc.terminate()
-            if 'porcupine' in locals(): porcupine.delete()
-            if 'cobra' in locals() and cobra: cobra.delete()
 
 if __name__ == "__main__":
     main()

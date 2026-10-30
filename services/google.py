@@ -67,7 +67,8 @@ def speak_text_gemini_old(leds, text, mood="normal", interrupt_check=None):
     print(f"   Jarvis (Gemini): {text[:50]}...")
     leds.update(Leds.rgb_on(DIM_BLUE))
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:streamGenerateContent?key={GOOGLE_TTS_KEY}&alt=sse"
+    from jarvis.config import get_next_key
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:streamGenerateContent?key={get_next_key()}&alt=sse"
     prompt = f"{style}: {text}"
     
     payload = {
@@ -130,7 +131,8 @@ def speak_text_gemini(leds, text, mood="normal", interrupt_check=None):
     print(f"   Jarvis (Gemini): {text[:50]}...")
     leds.update(Leds.rgb_on(DIM_BLUE))
     
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:streamGenerateContent?key={GOOGLE_TTS_KEY}&alt=sse"
+    from jarvis.config import get_next_key
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:streamGenerateContent?key={get_next_key()}&alt=sse"
     prompt = f"{style}: {text}"
     
     payload = {
@@ -143,6 +145,7 @@ def speak_text_gemini(leds, text, mood="normal", interrupt_check=None):
     
     player_command = ["aplay", "-r", "24000", "-f", "S16_LE", "-c", "1", "-t", "raw", "--buffer-time=500000"]
     player_process = None
+    first_chunk_received = False
 
     try:
         t_start = time.time() # Zeitmessung Start

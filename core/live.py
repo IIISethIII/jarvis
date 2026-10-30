@@ -1,5 +1,6 @@
 import asyncio
 import queue
+import threading
 import pyaudio
 import traceback
 import base64
@@ -80,6 +81,37 @@ def build_live_api_tools():
 
 live_api_tools = build_live_api_tools()
 
+def build_simple_live_api_tools():
+    declarations = [
+        types.FunctionDeclaration(
+            name="delegate_to_backend",
+            description="MANDATORY: You MUST call this tool immediately with the user's input. The string returned by this tool is the EXACT text you must read aloud to the user.",
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "user_intent": types.Schema(
+                        type="STRING",
+                        description="The exact, full transcription of what the user just said or asked."
+                    )
+                },
+                required=["user_intent"]
+            )
+        )
+    ]
+    return types.Tool(function_declarations=declarations)
+
+simple_live_api_tools = build_simple_live_api_tools()
+
+STATIC_SYSTEM_INSTRUCTION = '''Du bist Jarvis, das Sprach-Interface für das Smart Home.
+DEINE EINZIGE AUFGABE: Höre dem User zu und rufe SOFORT und EXAKT EINMAL das Tool "delegate_to_backend" mit dem gesprochenen Text des Users auf.
+WICHTIG: Antworte niemals selbst auf die Frage. Sag nichts, bevor du das Tool aufrufst.
+Wenn das Tool "delegate_to_backend" Ergebnisse zurückliefert, LIES DIE ANTWORT EXAKT 1:1 VOR.
+REGELN FÜR DIE SPRACHAUSGABE:
+- Spreche die Antwort in derselben Sprache aus, in der der User seine Frage gestellt hat.
+- Füge KEINE Floskeln hinzu. Lies einfach nur das Resultat vor.
+- Wenn das Resultat "<SILENT>" lautet, bleibe ABSOLUT STUMM und sage kein einziges Wort.
+Nach dem Vorlesen der Antwort ist deine Aufgabe beendet. Rufe das Tool NIEMALS ein zweites Mal auf.'''
+
 def get_dynamic_system_instruction(time_since_last_activity):
     # Load Core Memory & Routines from Mem0 via memory service
     core_content = ""
@@ -155,9 +187,10 @@ Du bist für EINFACHE, SOFORTIGE Aktionen zuständig.
    - Wenn Python-Code ausgeführt werden muss (Berechnungen, Deep Web-Scraping).
    - In diesen Fällen rufst du ZWINGEND "delegate_to_backend" auf. Versuche NIEMALS komplexe Routinen selbst auszuführen!
 3. KOMMUNIKATION:
-   - Nach erfolgreichem Toolaufruf antworte ultrakurz (z.B. "Ok", "Erledigt", "Licht ist an").
+   - Nach erfolgreichem lokalen Toolaufruf antworte ultrakurz (z.B. "Ok", "Erledigt", "Licht ist an").
+   - Wenn du "delegate_to_backend" aufrufst, sage EINEN KURZEN ÜBERBRÜCKUNGSSATZ (z.B. "Einen Moment...", "Lass mich kurz nachschauen...", "Bin dran.").
    - Wenn "delegate_to_backend" antwortet, lies die exakte Antwort flüssig vor, füge KEINE Floskeln hinzu.
-   - Nutze das Tool "end_conversation", wenn die Konversation beendet werden soll, z.B. wenn der User "Danke.", "Stop!", "Das wars." sagt.
+   - Nutze das Tool "end_conversation", wenn die Konversation beendet werden soll, z.B. wenn der User "Danke.", "Stop!", "Das wars" sagt.'''
 
     return types.Content(role="system", parts=[types.Part.from_text(text=text)])
 
@@ -165,6 +198,8 @@ class JarvisHybridRouter:
     def __init__(self, leds, audio_queue):
         self.leds = leds
         self.audio_queue = audio_queue
+        self.audio_out_queue = queue.Queue()
+        self.playback_thread: threading.Thread | None = None
         self._active_backend_task = None
         self.is_playing_audio = False
         self.last_audio_end_time = 0.0
@@ -172,6 +207,7 @@ class JarvisHybridRouter:
         # (user audio sent OR model/tool response received). Used for idle timeout.
         self.last_activity_time = time.time()
         self.is_thinking = False
+        self._active_backend_cancel_event: threading.Event | None = None
 
         # Accumulated token usage for the Live API (Fast Brain) session.
         self.live_input_tokens = 0
@@ -230,8 +266,7 @@ class JarvisHybridRouter:
                 id=call_id,
                 name=name,
                 response={
-                    "result": str(result),
-                    "scheduling": "INTERRUPT" 
+                    "result": str(result)
                 }
             )
             await session.send_tool_response(function_responses=[function_response])
@@ -250,21 +285,37 @@ class JarvisHybridRouter:
     async def _handle_slow_brain_tool(self, session, tool_call):
         """Catches the tool call and routes it to the heavy agentic backend in a thread."""
         try:
+            if getattr(self, "has_delegated", False):
+                print(" [Fast Brain] Ignoriere weiteren Aufruf von delegate_to_backend (Session schließt gleich).")
+                from google.genai import types
+                function_response = types.FunctionResponse(
+                    id=tool_call.id,
+                    name="delegate_to_backend",
+                    response={"text_to_speak": "<SILENT>"}
+                )
+                await session.send_tool_response(function_responses=[function_response])
+                return
+
+            self.has_delegated = True
+            
             args = tool_call.args
             user_intent = args.get("user_intent", "")
             call_id = tool_call.id
             
             # Cancel any existing stale backend task (prevent ghost duplicates)
             if self._active_backend_task and not self._active_backend_task.done():
+                if self._active_backend_cancel_event:
+                    self._active_backend_cancel_event.set()
                 self._active_backend_task.cancel()
                 
+            self._active_backend_cancel_event = threading.Event()
             self._active_backend_task = asyncio.create_task(
-                 self._run_backend_reasoning(session, user_intent, call_id)
+                 self._run_backend_reasoning(session, user_intent, call_id, self._active_backend_cancel_event)
             )
         except Exception as e:
             print(f"[Router Error] Could not delegate to backend: {e}")
 
-    async def _run_backend_reasoning(self, session, user_intent: str, call_id: str):
+    async def _run_backend_reasoning(self, session, user_intent: str, call_id: str, cancel_event: threading.Event | None = None):
         """The Slow Brain loop executing your existing agentic workflow non-blockingly."""
         try:
             print(f" [Slow Brain] Processing Intent: {user_intent}")
@@ -287,11 +338,12 @@ class JarvisHybridRouter:
                 self.leds, 
                 final_prompt, 
                 None,  # WAV data not needed, Live API already transcribed it
-                True   # silent_mode=True to prevent duplicate TTS in llm.py
+                True,  # silent_mode=True to prevent duplicate TTS in llm.py
+                cancel_event
             )
             
-            if "<SESSION:CLOSE>" in response_text:
-                 self.close_after_turn = True
+            # ALWAYS CLOSE AFTER ONE COMMAND:
+            self.close_after_turn = True
             
             # Save final interactions
             clean_resp = response_text.replace("<SESSION:KEEP>", "").replace("<SESSION:CLOSE>", "").strip()
@@ -308,8 +360,7 @@ class JarvisHybridRouter:
                 id=call_id,
                 name="delegate_to_backend",
                 response={
-                    "result": clean_resp,
-                    "scheduling": "INTERRUPT" 
+                    "text_to_speak": clean_resp
                 }
             )
             
@@ -352,17 +403,15 @@ class JarvisHybridRouter:
                     continue
                 
                 if chunks:
-                    pcm_data = b''.join(chunks)
-                    
-                    # If we're currently playing audio from the model, or if we just finished within the last 0.6 seconds, duck the mic input to prevent feedback loops and overwhelming the user with loud audio.
+                    # If we're currently playing audio from the model, or if we just finished within the last 0.6 seconds, mute the mic input completely.
                     if self.is_playing_audio or (time.time() - self.last_audio_end_time < 0.6):
-                        try:
-                            import audioop
-                            # Dämpfe das Signal auf 10% 
-                            pcm_data = audioop.mul(pcm_data, 2, 0.1)
-                            # print(f" [Fast Brain] Mic Ducked ({len(pcm_data)} bytes)", flush=True)
-                        except Exception as e:
-                            print(f"[Fast Brain] Ducking failed: {e}")
+                        continue
+                        
+                    # Mute mic while thinking or waiting for backend, or if we already delegated the single command
+                    if self.has_delegated or self.is_thinking or (self._active_backend_task and not self._active_backend_task.done()):
+                        continue
+                    
+                    pcm_data = b''.join(chunks)
                             
                     # print(f" [Fast Brain] Sent {len(pcm_data)} bytes of audio", flush=True)
                     # For Python SDK we must send exactly types.Blob directly rather than JSON dicts
@@ -438,7 +487,7 @@ class JarvisHybridRouter:
                                         self.close_after_turn = True
                                         await self._handle_local_tool(session, call)
                                 else:
-                                    await self._handle_local_tool(session, call)
+                                    asyncio.create_task(self._handle_local_tool(session, call))
                         continue
                     
                     # The Interruption Kill Switch
@@ -497,10 +546,7 @@ class JarvisHybridRouter:
                                     self.leds.update(config.DIM_PURPLE)
                                     self.is_playing_audio = True
                                     
-                                try:
-                                    await loop.run_in_executor(None, self.out_stream.write, part.inline_data.data)
-                                finally:
-                                    self.last_audio_end_time = time.time()
+                                self.audio_out_queue.put_nowait(part.inline_data.data)
                                     
                         # Append the Fast Brain's response to the global history
                         if model_text_parts:
@@ -523,15 +569,30 @@ class JarvisHybridRouter:
                             self.is_thinking = False
                             sfx.stop_loop()
 
-                        self.is_playing_audio = False
-
-                        self.leds.pattern = None
-                        self.leds.update(Color.BLUE)
+                        # LEDs are now updated safely by the playback worker or here if audio is already done
+                        if not self.is_playing_audio and not self.close_after_turn and not self.should_close:
+                            self.leds.pattern = None
+                            self.leds.update(Color.BLUE)
                             
                         if self.should_close or self.close_after_turn:
-                            print(" [Fast Brain] Turn complete and Backend closed session. Disconnecting.")
-                            self.should_close = True
-                            return # Exit loop
+                            print(" [Fast Brain] Turn complete and Backend closed session. Waiting for audio to finish...")
+                            
+                            async def wait_and_close():
+                                # Wait for the audio queue to drain and speaker to stop
+                                while (not self.audio_out_queue.empty() or self.is_playing_audio) and not self.should_close:
+                                    await asyncio.sleep(0.1)
+                                
+                                # Add small natural buffer, then initiate shutdown
+                                if not self.should_close:
+                                    await asyncio.sleep(0.5)
+                                    print(" [Fast Brain] Audio finished. Disconnecting.")
+                                    self.should_close = True
+
+                            # Only delay the close if it wasn't a hard interrupt
+                            if not self.should_close:
+                                asyncio.create_task(wait_and_close())
+                            else:
+                                return # Hard exit immediately
                 
                 # If we broke out cleanly, check should_close
                 if self.should_close:
@@ -588,14 +649,24 @@ class JarvisHybridRouter:
                         flush=True,
                     )
                     self.should_close = True
-                    try:
-                        await session.close()
-                    except Exception as e:
-                        print(f" [Fast Brain] Error closing session on idle timeout: {e}", flush=True)
                     return
         except asyncio.CancelledError:
             # Normal path when the session finishes earlier
             print(" [Fast Brain] Session timeout watchdog cancelled", flush=True)
+
+    def _audio_playback_worker(self):
+        while not self.should_close:
+            try:
+                chunk = self.audio_out_queue.get(timeout=0.1) 
+                self.out_stream.write(chunk)
+                self.last_audio_end_time = time.time()
+                self.is_playing_audio = True
+            except queue.Empty:
+                if self.is_playing_audio and (time.time() - self.last_audio_end_time > 0.3):
+                    self.is_playing_audio = False
+                    # Only turn LED back to Blue if we are not closing
+                    if not self.is_thinking and not self.should_close and not self.close_after_turn:
+                        self.leds.update(Color.BLUE)
 
     async def start_session(self):
         """Establishes the Live API session upon wake word detection."""
@@ -605,9 +676,13 @@ class JarvisHybridRouter:
         self._waiting_for_tts_completion = False
         self.is_playing_audio = False
         self.is_thinking = False
+        self.has_delegated = False
         
         # Calculate time since last interaction
         time_since_last_activity = time.time() - self.last_activity_time
+        
+        # Reset any stale cancellation requests from previous button bounces or thread waits
+        state.CANCEL_REQUESTED = False
         
         # Reset Live API token accounting for this session.
         self.live_input_tokens = 0
@@ -626,8 +701,8 @@ class JarvisHybridRouter:
             "response_modalities": ["AUDIO"],
             "enable_affective_dialog": True,
             "thinking_config": types.ThinkingConfig(thinking_budget=-1, include_thoughts=True),
-            "system_instruction": get_dynamic_system_instruction(time_since_last_activity),
-            "tools": [live_api_tools],
+            "system_instruction": types.Content(role="system", parts=[types.Part.from_text(text=STATIC_SYSTEM_INSTRUCTION)]),
+            "tools": [simple_live_api_tools],
             "speech_config": types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
@@ -657,6 +732,17 @@ class JarvisHybridRouter:
         # Initialize an empty array to accumulate user transcript strings for this session
         self._current_user_transcript = []
         
+        # Clear queue from previous sessions
+        while not self.audio_out_queue.empty():
+            try:
+                self.audio_out_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        worker_thread = threading.Thread(target=self._audio_playback_worker, daemon=True)
+        worker_thread.start()
+        self.playback_thread = worker_thread
+        
         try:
             async with self.client.aio.live.connect(
                 model="gemini-2.5-flash-native-audio-preview-12-2025", 
@@ -670,15 +756,18 @@ class JarvisHybridRouter:
                 
                 # Wait until either the send loop detects a close, the receive loop breaks,
                 # or the timeout watchdog triggers.
-                await asyncio.wait(
+                done, pending = await asyncio.wait(
                     [send_task, receive_task, timeout_task], 
                     return_when=asyncio.FIRST_COMPLETED
                 )
                 
-                # Cleanup tasks if they are still pending
-                send_task.cancel()
-                receive_task.cancel()
-                timeout_task.cancel()
+                # Gracefully cancel anything still pending
+                for task in pending:
+                    task.cancel()
+                
+                # Give them a tiny moment to process the CancelledError 
+                # so the websocket doesn't get torn down violently.
+                await asyncio.sleep(0.1)
                 
         except Exception as e:
             print(f"Connection Lost: {e}", flush=True)
@@ -707,7 +796,7 @@ class JarvisHybridRouter:
             sfx.play(config.SOUND_SLEEP)
             
             if self._active_backend_task and not self._active_backend_task.done():
+                if self._active_backend_cancel_event:
+                    self._active_backend_cancel_event.set()
                 self._active_backend_task.cancel()
             self._active_backend_task = None
-                
-            state.IS_PROCESSING = False

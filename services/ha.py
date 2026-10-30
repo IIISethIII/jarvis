@@ -26,6 +26,22 @@ def _prune_attr_value(value, max_length: int = MAX_ATTR_LENGTH):
     overflow = len(text) - max_length
     return text[:max_length] + f"... [TRUNCATED +{overflow} chars]"
 
+def _convert_to_local(val, iso_format=False):
+    """
+    Converts a UTC timestamp string to the local timezone.
+    If iso_format is True, maintains ISO structure, otherwise returns a readable string.
+    """
+    if isinstance(val, str) and "T" in val and ("Z" in val or "+00:00" in val) and len(val) >= 19:
+        try:
+            ts_str = val.replace('Z', '+00:00')
+            dt = datetime.datetime.fromisoformat(ts_str)
+            if iso_format:
+                return dt.astimezone().isoformat()
+            return dt.astimezone().strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+    return val
+
 def fetch_ha_context():
     """
     Holt den Status aller Geräte.
@@ -63,15 +79,7 @@ def fetch_ha_context():
                 if state_val in ["unavailable", "unknown"]: continue
                 
                 # Convert UTC ISO timestamps (like next_alarm) to Local Time for the LLM
-                if isinstance(state_val, str) and "T" in state_val and ("Z" in state_val or "+00:00" in state_val) and len(state_val) >= 19:
-                    try:
-                        # Fix 'Z' for pre-3.11 compatibility
-                        ts_str = state_val.replace('Z', '+00:00')
-                        dt = datetime.datetime.fromisoformat(ts_str)
-                        # Reformat to a clean local string the LLM can easily read like "2026-02-25 08:15"
-                        state_val = dt.astimezone().strftime("%Y-%m-%d %H:%M")
-                    except Exception:
-                        pass
+                state_val = _convert_to_local(state_val)
 
                 if eid.endswith("_led"): continue 
                 if domain in ignored_domains: continue
@@ -88,7 +96,8 @@ def fetch_ha_context():
                 
                 for k, v in attrs.items():
                     if k not in ignored_attributes:
-                        clean_entity["attributes"][k] = _prune_attr_value(v)
+                        converted_v = _convert_to_local(v)
+                        clean_entity["attributes"][k] = _prune_attr_value(converted_v)
                 if not clean_entity["attributes"]: del clean_entity["attributes"]
                 
                 llm_context.append(clean_entity)
@@ -142,6 +151,11 @@ def get_ha_history(entity_ids, start_time, end_time=None, minimal_response=False
             
             # HA returns a list of lists (one list of state dicts per entity)
             for i in range(len(data)):
+                for event in data[i]:
+                    for key in ['last_changed', 'last_updated']:
+                        if key in event:
+                            event[key] = _convert_to_local(event[key], iso_format=True)
+                            
                 if len(data[i]) > max_events:
                     # Slice to keep only the most recent 'max_events'
                     data[i] = data[i][-max_events:]
@@ -319,7 +333,7 @@ def get_ha_calendar_events(count=5, days=0):
     # Unverändert, da keine komplexe Logik
     calendar_entities = [eid for eid in global_state.AVAILABLE_LIGHTS.values() if eid.startswith("calendar.")]
     if not calendar_entities: return "Keine Kalender."
-    now = datetime.datetime.now()
+    now = datetime.datetime.now().astimezone()
     end = now.replace(hour=23, minute=59) if days == 0 else now + datetime.timedelta(days=days)
     all_events = []
     headers = {"Authorization": "Bearer " + HA_TOKEN, "content-type": "application/json"}
@@ -332,6 +346,7 @@ def get_ha_calendar_events(count=5, days=0):
     output = ""
     for event in all_events[:count]:
         start = event['start'].get('dateTime', event['start'].get('date'))
+        start = _convert_to_local(start)
         output += f"- {event.get('summary')} @ {start}\n"
     return output or "Keine Termine."
 

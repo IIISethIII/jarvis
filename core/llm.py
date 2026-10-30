@@ -36,6 +36,10 @@ SYSTEM_PROMPT_TEMPLATE = """
     KOMMUNIKATIONSSTIL:
     - Casual aber respektvoll (Du-Form)
     - Bei technischen Problemen: ehrlich aber lösungsorientiert
+    - WICHTIG: Das Fast Brain hat dem User bereits eine kurze Bestätigung gegeben (z.B. "Einen Moment..."). 
+    - Fange deine Antwort NIEMALS mit Floskeln an wie "Okay", "Mache ich", "Alles klar" oder "Erledigt". 
+    - Liefere DIREKT die Fakten (z.B. "Das Wetter wird sonnig und hier sind die Nachrichten...").
+    - Wenn du nur Geräte im Hintergrund gesteuert hast und dem User keine neuen Informationen vorlesen musst, antworte AUSSCHLIESSLICH mit "<SILENT>".
     
     KONVERSATIONSSTEUERUNG (WICHTIG):
     Nach JEDER Antwort fügst du GENAU EINES dieser Tokens hinzu:
@@ -219,8 +223,8 @@ def trim_history():
             expect_user = not is_user
 
     # Hard Limit anwenden
-    if len(final_history) > 30:
-        final_history = final_history[-30:]
+    if len(final_history) > 10:
+        final_history = final_history[-10:]
         
     # Sicherstellen, dass der erste Eintrag ein User ist (Gemini mag Start mit Model nicht)
     while final_history and final_history[0]['role'] != 'user':
@@ -234,7 +238,7 @@ def _strip_thought_signature(parts):
     # We no longer strip it.
     return parts
 
-def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
+def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False, cancel_event=None):
     from jarvis.config import DIM_PURPLE 
     if not silent_mode:
         leds.pattern = Pattern.breathe(2000)
@@ -336,6 +340,10 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
         step_count = 0
 
         while step_count < MAX_STEPS:
+            if cancel_event and cancel_event.is_set():
+                print(" [Slow Brain] 🛑 Backend task was cancelled (Ghost check).")
+                return ""
+
             payload['contents'] = list(CONVERSATION_HISTORY)
             
             resp = session.post(get_gemini_url(), json=payload, timeout=40)
@@ -386,6 +394,10 @@ def ask_gemini(leds, text_prompt=None, audio_data=None, silent_mode=False):
                 print(f"  [Tools] Step {step_count+1}: Executing {len(function_calls)} calls...")
                 tool_responses = []
                 for call in function_calls:
+                    if cancel_event and cancel_event.is_set():
+                        print(" [Slow Brain] 🛑 Backend task was cancelled during tool execution.")
+                        return ""
+
                     fn = call['functionCall']
                     try:
                         res = execute_tool(fn['name'], fn.get('args', {}), silent_mode=silent_mode)
