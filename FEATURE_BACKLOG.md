@@ -16,7 +16,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 ## Was v3 schon kann
 
 - Wake-Word „Hey Jarvis" (openWakeWord), Mikrofon-Watchdog (Timeout, Rapid-Fire, Stille, Queue-Stau)
-- Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach 15 s Stille
+- Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach Stille (Timer ab Ende der Sprachausgabe, unbeantwortete Sprache zählt nur begrenzt, kürzer bei laufender Musik)
 - LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
 - Smart Home: generisches `call_ha_service` + alle HA-States und -Services im System-Prompt
 - `set_speaker_volume`, `get_pi_temperature`, `end_conversation`
@@ -34,7 +34,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 - [ ] **Prompt verweist auf ein Tool, das es nicht gibt.** Der System-Prompt in `core/llm.py` sagt bei „Musik": `category='station', name='Library Radio'`. Ein Tool mit diesen Parametern gibt es in v3 aber nicht (siehe P1 „Musik gezielt abspielen"). Entweder das Tool portieren oder die Prompt-Regel anpassen.
 
-- [ ] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet. Die Regel in `core/llm.py` (KONVERSATIONSSTEUERUNG) und die Tool-Beschreibung in `core/tools.py` enger fassen: nur bei einem klaren Abschluss, bei unklaren Fragmenten still bleiben. Das Sessionende per 15-s-Inaktivität reicht sonst.
+- [ ] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet. Die Regel in `core/llm.py` (KONVERSATIONSSTEUERUNG) und die Tool-Beschreibung in `core/tools.py` enger fassen: nur bei einem klaren Abschluss, bei unklaren Fragmenten still bleiben. Das Sessionende per Inaktivität reicht sonst.
 
 - [x] **Hardware-Button verdrahtet.** Ein Druck während einer Session bricht sie ab (Wiedergabe stoppt, LED kurz rot). Im Idle blinkt die LED kurz in einer zufälligen Farbe. Umgesetzt über `GeminiLiveProvider.request_cancel()` (`cancel_event`, geprüft in `_inactivity_loop` bzw. beim Verbindungsaufbau). Pin per `JARVIS_BUTTON_PIN`, Backend `gpiozero` + `lgpio` (RPi.GPIO kann auf Kernel 6.12 keine Flanken erkennen). Wenn es Timer gibt, soll der Button auch einen klingelnden Alarm stoppen (siehe P1).
 
@@ -160,7 +160,6 @@ Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts
 - [ ] **Werte konfigurierbar machen**, per Env oder Config-Datei:
   - Voice (`Zubenelgenubi`)
   - Mic-Gain (`* 4.0` in `_send_audio_loop`)
-  - Inaktivitäts-Timeout (15 s)
   - Wake-Word-Modell und Schwelle (`hey_jarvis`, 0.5)
   - Mailbox-Entity (`input_text.jarvis_chat` in `core/ha.py`)
 - [ ] **MCP-Config:** `core/mcp_config.json` enthält private Hosts → `mcp_config.example.json` committen und die echte Datei gitignoren. Dabei gleich eine Allow-/Denylist pro Server einbauen.

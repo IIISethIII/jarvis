@@ -1,4 +1,5 @@
 import asyncio
+import math
 import os
 import threading
 import time
@@ -25,6 +26,10 @@ class GeminiLiveProvider:
         # Set from other threads (hardware button) to end the running session
         self.cancel_event = threading.Event()
         self.is_active = False
+        # Session end: seconds of silence after Jarvis spoke (shorter while media plays), see _close_reason
+        self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
+        self.idle_timeout_media = float(os.getenv("JARVIS_IDLE_TIMEOUT_MEDIA", "8"))
+        self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
 
     def request_cancel(self):
         """Ends the running session (thread-safe). Does nothing when idle."""
@@ -78,6 +83,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
   - VERBOTEN: Aufzählungszeichen (-, *, •), Nummerierungen (1.), Emojis, Sonderzeichen, Markdown.
   - Wenn du eine Liste vorliest, verbinde die Elemente mit "und" oder mache Pausen durch neue Sätze, statt Striche zu nutzen.
 - Wenn der User nichts sagt oder die Eingabe nur Geräusche/Rauschen enthält, antworte nicht.
+- Wenn die Eingabe offensichtlich nicht an dich gerichtet ist (Liedtexte aus der Musik, Fernseher, Leute die miteinander reden), antworte nicht.
 
 === KONVERSATIONSSTEUERUNG ===
 - Nutze das Tool 'end_conversation', wenn die Konversation beendet werden soll, z.B. wenn der User "Danke.", "Stop!", "Tschüss", "Das war's" sagt oder andeutet, dass das Gespräch vorbei ist.
@@ -196,6 +202,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             'user_parts': [mock_text] if mock_text else [],
             'jarvis_parts': [],
             'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
+            'last_user_speech': 0.0,  # last input transcript; only counts as activity once Gemini answers
+            'media_playing': False,
         }
 
         async def _do_connect(client_instance):
@@ -243,6 +251,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
         # Attempt connection with automatic fallback across configured API keys
         max_attempts = len(self.api_keys)
         last_error = None
+        # Must stay above the longest regular idle period (timeout + speech grace)
+        watchdog_s = max(30.0, self.idle_timeout + self.speech_grace + 10.0)
 
         for attempt in range(max_attempts):
             try:
@@ -257,8 +267,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         state['is_closed'] = True
                         connect_task.cancel()
                         break
-                    if self._idle_seconds(state, audio_manager) > 30.0:
-                        print("\n[LLM Watchdog] 30s without activity (deadlock?). Force-cancelling connection!")
+                    if self._idle_seconds(state, audio_manager) > watchdog_s:
+                        print(f"\n[LLM Watchdog] {watchdog_s:.0f}s without activity (deadlock?). Force-cancelling connection!")
                         state['is_closed'] = True
                         connect_task.cancel()
                         break
@@ -307,15 +317,50 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             return 0.0
         return time.time() - max(state['last_activity'], audio_manager.last_speech_time)
 
+    def _close_reason(self, state, audio_manager):
+        """Returns why the session should end now, or None.
+
+        User speech only counts as activity once Gemini answers it (the prompt tells it to stay silent when
+        not addressed). Until then it buys a grace period that shrinks the longer Jarvis has been listening,
+        capped at timeout + grace, so music, TV or people talking to each other can't keep the session open.
+        """
+        idle = self._idle_seconds(state, audio_manager)
+        if idle <= 0:
+            return None
+        timeout = self.idle_timeout_media if state['media_playing'] else self.idle_timeout
+        deadline = timeout
+        heard_at = idle - (time.time() - state['last_user_speech'])  # seconds into the silence; < 0 = answered
+        if heard_at > 0:
+            grace = self.speech_grace * math.exp(-heard_at / timeout)
+            deadline = min(timeout + self.speech_grace, max(timeout, heard_at + grace))
+        if idle <= deadline:
+            return None
+        media = ", media playing" if state['media_playing'] else ""
+        unanswered = ", user speech unanswered" if heard_at > 0 else ""
+        return f"{idle:.0f}s without activity (timeout {timeout:.0f}s{media}{unanswered})"
+
     async def _inactivity_loop(self, state, audio_manager):
-        """Monitors activity and closes the connection after 15s of silence or when cancelled (button)."""
+        """Closes the connection once the user stopped talking to Jarvis (see _close_reason) or when cancelled (button)."""
+        from core.tools import ha_client
+        media_poll = None
+        next_media_poll = 0.0
         while not state.get('is_closed', False):
             await asyncio.sleep(0.2)
             if self.cancel_event.is_set():
                 print("\n[LLM] Session cancelled by button.", flush=True)
                 return
-            if self._idle_seconds(state, audio_manager) > 15.0:
-                print("\n[LLM] 15 seconds of silence detected. Closing session to save resources...")
+            # Not awaited, so a slow HA never delays the cancel check; media_playing() never raises
+            if media_poll is not None and media_poll.done():
+                if media_poll.result() != state['media_playing']:
+                    state['media_playing'] = media_poll.result()
+                    print(f"[LLM] Media {'playing' if state['media_playing'] else 'stopped'}: shorter idle timeout {'on' if state['media_playing'] else 'off'}.", flush=True)
+                media_poll = None
+            if media_poll is None and ha_client.media_watch and time.time() >= next_media_poll:
+                media_poll = asyncio.ensure_future(asyncio.to_thread(ha_client.media_playing))
+                next_media_poll = time.time() + 5.0
+            reason = self._close_reason(state, audio_manager)
+            if reason:
+                print(f"\n[LLM] {reason}. Closing session to save resources...", flush=True)
                 return
 
     async def _send_audio_loop(self, audio_manager, session, state):
@@ -424,7 +469,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
 
                         input_transcription = getattr(server_content, 'input_transcription', None)
                         if input_transcription is not None and getattr(input_transcription, 'text', None):
-                            state['last_activity'] = time.time()
+                            state['last_user_speech'] = time.time()  # becomes activity once Gemini answers
                             hardware.set_color("blue", blink=True) # Pulsing blue = transcribing/thinking
                             if state['jarvis_parts']:
                                 self._flush_turn(state)  # new user speech after an answer: previous exchange is done

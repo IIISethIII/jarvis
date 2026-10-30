@@ -14,7 +14,9 @@ Previous architecture (Live front-end + REST "slow brain" + Mem0) is tag `v2-fin
 3. Wake word → `asyncio.run(GeminiLiveProvider.connect(...))` (`core/llm.py`). One Live session per wake word, with three tasks:
    - `_send_audio_loop`: mic → 4x digital gain → `send_realtime_input`
    - `_receive_audio_loop`: audio (24 kHz) → playback queue, transcripts → log, tool calls → execute → `send_tool_response`
-   - `_inactivity_loop`: ends the session after 15 s without activity (plus a 30 s deadlock watchdog in `connect`)
+   - `_inactivity_loop`: ends the session after `JARVIS_IDLE_TIMEOUT` (15 s) of silence, counted from the end of Jarvis' speech and paused while a tool runs (plus a deadlock watchdog in `connect`).
+     - User speech only counts as activity once Gemini answers it. Unanswered speech (music, TV, people talking) gets a grace period that shrinks the longer Jarvis listens, capped at timeout + `JARVIS_SPEECH_GRACE`.
+     - If HA is configured, it polls `HomeAssistant.media_playing()` every 5 s; while media plays, the shorter `JARVIS_IDLE_TIMEOUT_MEDIA` applies. `JARVIS_MEDIA_PLAYERS` limits which players count (`none` = off).
 4. The session also ends when a tool returns `"<END_CONVERSATION>"` or the server sends GoAway. Then the sleep sound plays, LEDs go off, and the loop returns to idle.
 
 Important behaviour:
