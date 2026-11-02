@@ -1,11 +1,41 @@
 import pyaudio
 import multiprocessing
 import queue
+import os
+import numpy as np
 
 # Constants matched to openWakeWord and Gemini Live API specs
 RATE = 16000
 CHANNELS = 1
 CHUNK = 512
+
+# High-pass cutoff for the mic signal in Hz, 0 = off. Removes mains hum (50/60 Hz and harmonics) and rumble.
+HIGHPASS_HZ = float(os.getenv("JARVIS_MIC_HIGHPASS", "150"))
+
+class HighPassFilter:
+    """Linear-phase FIR high-pass (windowed sinc), applied block by block with FFT overlap-save.
+
+    numpy only: importing scipy.signal costs ~20 MB RAM on the Pi Zero. Delay is (taps - 1) / 2 samples (31 ms).
+    """
+    def __init__(self, cutoff_hz, rate=RATE, taps=1001):
+        n = np.arange(taps) - (taps - 1) / 2
+        lowpass = np.sinc(2 * cutoff_hz / rate * n) * np.blackman(taps)
+        lowpass /= lowpass.sum()
+        self.kernel = -lowpass
+        self.kernel[(taps - 1) // 2] += 1.0  # spectral inversion: high-pass = delta - low-pass
+        self.history = np.zeros(taps - 1)
+        self._spectra = {}  # FFT size -> kernel spectrum
+
+    def process(self, pcm):
+        """Filters a block of int16 PCM bytes and returns int16 PCM bytes of the same length."""
+        x = np.frombuffer(pcm, dtype=np.int16)
+        buf = np.concatenate([self.history, x])
+        self.history = buf[-len(self.history):]
+        size = 1 << (len(buf) - 1).bit_length()
+        if size not in self._spectra:
+            self._spectra[size] = np.fft.rfft(self.kernel, size)
+        y = np.fft.irfft(np.fft.rfft(buf, size) * self._spectra[size], size)[len(self.history):len(buf)]
+        return np.clip(np.rint(y), -32768, 32767).astype(np.int16).tobytes()
 
 def _audio_worker(audio_q):
     """
@@ -15,6 +45,8 @@ def _audio_worker(audio_q):
     import logging
     logging.basicConfig(filename='/tmp/audio_worker.log', level=logging.DEBUG)
     logging.info("[Audio Worker] Starting...")
+    highpass = HighPassFilter(HIGHPASS_HZ) if HIGHPASS_HZ > 0 else None
+    print(f"[Audio] Mic high-pass: {f'{HIGHPASS_HZ:.0f} Hz' if highpass else 'off'}", flush=True)
     p = pyaudio.PyAudio()
     try:
         # Note: Because of our .asoundrc, 'input=True' automatically uses
@@ -29,6 +61,8 @@ def _audio_worker(audio_q):
             try:
                 # exception_on_overflow=False prevents crashes if the Pi spikes in CPU
                 data = stream.read(CHUNK, exception_on_overflow=False)
+                if highpass:
+                    data = highpass.process(data)
                 audio_q.put(data)
             except Exception as e:
                 logging.error(f"[Audio Worker] Error reading stream: {e}")
@@ -44,7 +78,6 @@ def _audio_worker(audio_q):
         logging.info("[Audio Worker] Exited.")
 
 import threading
-import os
 
 def get_bonnet_card_index():
     """Dynamically finds the card index for the AIY Voice Bonnet."""

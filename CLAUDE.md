@@ -10,7 +10,7 @@ Previous architecture (Live front-end + REST "slow brain" + Mem0) is tag `v2-fin
 ## Runtime flow
 
 1. `main.py` boots: LEDs (`core/hardware.py`), ALSA mixer levels (`core/audio.init_audio_settings`), core memory, MCP connections, `AudioManager`, `WakeWordDetector`.
-2. Idle loop: mic chunks (16 kHz mono int16, 512 frames) come from a **separate process** via `multiprocessing.Queue`. Watchdogs restart the mic process on timeout, "rapid-fire" chunks, dead silence or a backed-up queue. Each chunk goes to openWakeWord (`hey_jarvis`, threshold 0.5).
+2. Idle loop: mic chunks (16 kHz mono int16, 512 frames) come from a **separate process** via `multiprocessing.Queue`. That process applies a high-pass filter (`JARVIS_MIC_HIGHPASS`, 150 Hz) against mains hum, so the wake word and Gemini both get the filtered signal. Watchdogs restart the mic process on timeout, "rapid-fire" chunks, dead silence or a backed-up queue. Each chunk goes to openWakeWord (`hey_jarvis`, `JARVIS_WAKE_THRESHOLD` 0.5); scores just below the threshold are logged as `[WakeWord] Near miss`.
 3. Wake word → `asyncio.run(GeminiLiveProvider.connect(...))` (`core/llm.py`). One Live session per wake word, with three tasks:
    - `_send_audio_loop`: mic → 4x digital gain → `send_realtime_input`
    - `_receive_audio_loop`: audio (24 kHz) → playback queue, transcripts → log, tool calls → execute → `send_tool_response`

@@ -161,7 +161,7 @@ Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts
 - [ ] **Werte konfigurierbar machen**, per Env oder Config-Datei:
   - Voice (`Zubenelgenubi`)
   - Mic-Gain (`* 4.0` in `_send_audio_loop`)
-  - Wake-Word-Modell und Schwelle (`hey_jarvis`, 0.5)
+  - Wake-Word-Modell (`hey_jarvis`). Die Schwelle ist seit 2026-11-02 `JARVIS_WAKE_THRESHOLD`.
   - Mailbox-Entity (`input_text.jarvis_chat` in `core/ha.py`)
 - [ ] **MCP-Config:** `core/mcp_config.json` enthält private Hosts → `mcp_config.example.json` committen und die echte Datei gitignoren. Dabei gleich eine Allow-/Denylist pro Server einbauen.
 - [ ] **Hardware-Abstraktion:** `BonnetHardware` setzt das Voice Bonnet V2 voraus (I2C-LED-Treiber auf 0x31, Button an GPIO 23). Das hinter ein kleines Interface legen, mit `NullHardware`, wenn nichts gefunden wird. Den Mock-Fallback ohne `smbus2` gibt es schon.
