@@ -11,6 +11,7 @@ from core.wake import WakeWordDetector
 from core.mcp import mcp_client
 from core import memory
 from core.llm import GeminiLiveProvider
+from core.timers import timer_manager
 
 def main():
     parser = argparse.ArgumentParser()
@@ -40,6 +41,8 @@ def main():
 
     def on_button_press():
         # Runs in a gpiozero thread. Half-duplex audio means this is the only way to interrupt Jarvis.
+        if timer_manager.stop_ringing("button"):
+            return
         if llm_provider.is_active:
             print("\n[Button] Pressed: cancelling session.", flush=True)
             llm_provider.request_cancel()
@@ -50,6 +53,9 @@ def main():
             hardware.flash(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
 
     hardware.set_button_handler(on_button_press)
+    # A firing timer ends a running session so the alarm isn't mixed with speech.
+    # The lambda reads audio_manager at call time because the test mode replaces it after each session.
+    timer_manager.start(lambda: audio_manager, hardware, on_ring=llm_provider.request_cancel)
 
     if args.test:
         print("[Boot] Running in TEST mode. Waiting for mock trigger...")
@@ -178,6 +184,10 @@ def main():
                             pass
 
                 if wake_detector.process_chunk(chunk):
+                    if timer_manager.stop_ringing("wake word"):
+                        audio_manager.flush()
+                        wake_detector.reset()
+                        continue
                     print("\n🚨 Wake Word Detected!", flush=True)
                     hardware.set_color("purple", blink=False)
                     sfx.play("wake")

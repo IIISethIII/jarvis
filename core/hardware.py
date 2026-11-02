@@ -136,6 +136,9 @@ class BonnetHardware:
         self._pulse_thread = threading.Thread(target=self._pulse_animation, args=(r, g, b), daemon=True)
         self._pulse_thread.start()
 
+    def is_pulsing(self):
+        return bool(self._pulse_thread and self._pulse_thread.is_alive())
+
     def stop_effect(self):
         self._stop_event.set()
         if self._pulse_thread:

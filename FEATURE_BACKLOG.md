@@ -40,7 +40,8 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 ## P1 – Alltagsfeatures mit hohem Nutzen
 
-- [ ] **Timer & Wecker.** In v3 gibt es gar keine Timer.
+- [x] **Timer & Wecker.** Umgesetzt 2026-11-02 in `core/timers.py` und dem Tool `manage_timer` (set_timer, set_alarm, list, cancel). Es können mehrere Timer gleichzeitig laufen, sie werden in `data/timers.json` gespeichert und überstehen so einen Neustart (bis zu 10 min verpasste Timer klingeln nach). Stoppen per Wake-Word, Button oder Auto-Stopp nach `JARVIS_ALARM_TIMEOUT`. Ein Timer, der während einer Session fällig wird, beendet die Session.
+  - [ ] Offen: wiederkehrende Wecker (z.B. werktags 7:00), Snooze, Label beim Klingeln ansagen („Die Nudeln sind fertig“).
   - v2: `services/timer.py` (`manage_timer_alarm`, `background_timer_check`, `play_alarm_sound`, `stop_alarm_sound`, Auto-Stopp nach `ALARM_TIMEOUT = 120` s). Gestoppt wird per Wake-Word oder Button, die LED atmet dabei orange.
   - Für v3: `assets/sounds_src/alarm_gentle.ogg` mit `scripts/convert_sounds.py` nach `assets/sounds/alarm.pcm` konvertieren und als Loop über `SFXManager` abspielen. Timer-Thread in `main.py` starten. Im Idle-Loop: Wake-Word bei aktivem Alarm = Alarm stoppen statt Session starten.
   - Mehrere Timer erlauben (v2 erlaubte nur einen).

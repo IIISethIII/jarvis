@@ -110,6 +110,13 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
 - 5. "Wechsel auf Plexamp/Spotify" -> 'music_play' mit service='plex' bzw. 'spotify' und LEERER query.
 - 6. Für Musik (Abspielen, Pause, Weiter, Lautstärke, Wechseln) NIEMALS call_ha_service an Plex-, Plexamp-, Spotify- oder HiFiBerry-Media-Playern verwenden, sondern nur 'music_play' und 'music_control'. Sonst laufen zwei Player gleichzeitig.
 
+=== REGELN FÜR TIMER & WECKER ===
+- Timer ("Timer auf 10 Minuten", "Sag mir in einer halben Stunde Bescheid") -> 'manage_timer' mit action='set_timer' und seconds. Nenne ihn mit 'label', wenn der Zweck klar ist (z.B. 'Nudeln').
+- Wecker ("Weck mich um 7", "Wecker auf halb sieben") -> 'manage_timer' mit action='set_alarm' und time im 24h-Format. Sag der User "morgen" oder einen Wochentag, rechne date (YYYY-MM-DD) anhand der aktuellen Zeit aus, sonst lass date weg. Bei mehrdeutigen Uhrzeiten wie "um 7" nimm den nächsten sinnvollen Zeitpunkt (abends gestellt meist morgens früh).
+- Mehrere Timer gleichzeitig sind erlaubt. Für "Wie lange noch?" schau unten unter "AKTIVE TIMER & WECKER" oder nutze action='list'. Löschen mit action='cancel' (timer_id, label oder timer_id='all').
+- Bestätige kurz mit Dauer bzw. Uhrzeit (z.B. "Timer läuft, 10 Minuten." oder "Wecker steht auf 6:30.").
+- Diese Timer klingeln am Lautsprecher von Jarvis. Nutze dafür NICHT die timer-Entities von Home Assistant.
+
 === REGELN FÜR KALENDER, WEBSUCHE & EXTRA TOOLS (MCP) ===
 - Kalender: Nutze Kalender-Tools für Abfragen. Erstelle neue Termine NUR, wenn der User explizit einen neuen Termin erstellen will.
 - Kalender: Lies NIEMALS die rohe Liste vor. Fasse die Termine in natürlicher Sprache zusammen.
@@ -136,9 +143,14 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                 f"{recent}\n"
             )
 
+        from core.timers import timer_manager
+        active_timers = timer_manager.describe()
+        if active_timers:
+            system_prompt += f"\n=== AKTIVE TIMER & WECKER (Stand Sessionstart) ===\n{active_timers}\n"
+
         from core import tools
         from core.tools import ha_client
-        
+
         try:
             # Fetch HA devices so Gemini knows the entity_ids
             all_states = ha_client.fetch_all_states()

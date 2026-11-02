@@ -19,6 +19,7 @@ Previous architecture (Live front-end + REST "slow brain" + Mem0) is tag `v2-fin
      - While Gemini's server VAD reports the user speaking (`voice_activity` START → END), the timer is paused, for at most `JARVIS_MAX_SPEECH` s so endless background audio can't hold the session.
      - While Jarvis speaks, `_send_audio_loop` sends silence instead of the dropped mic audio, so the server sees a continuous stream.
 4. The session also ends when a tool returns `"<END_CONVERSATION>"` or the server sends GoAway. Then the sleep sound plays, LEDs go off, and the loop returns to idle.
+5. Timers and alarms (`core/timers.py`, tool `manage_timer`) run in their own thread and persist in `data/timers.json`. A firing timer cancels a running session and loops `assets/sounds/alarm.pcm` with an orange pulsing LED until the wake word, the button or `JARVIS_ALARM_TIMEOUT` (120 s) stops it. While it rings, the wake word only stops the alarm and does not start a session.
 
 Important behaviour:
 - **Half-duplex:** `AudioManager.get_audio_chunk` drops mic input while audio is playing, so the user cannot interrupt by voice.

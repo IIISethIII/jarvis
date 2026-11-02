@@ -12,7 +12,8 @@ mapping = {
     "state-change_confirm-down.ogg": "sleep.pcm",
     "ui_loading.ogg": "thinking.pcm",
     "state-change_confirm-up.ogg": "success.pcm",
-    "alert_error-03.ogg": "error.pcm"
+    "alert_error-03.ogg": "error.pcm",
+    "alarm_gentle.ogg": "alarm.pcm"
 }
 
 for src, dst in mapping.items():

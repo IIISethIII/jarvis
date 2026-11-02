@@ -36,6 +36,19 @@ def edit_core_memory(action: str, fact: str, replace_text: str = ""):
 def search_archive(query: str):
     return memory.search_archive(query)
 
+def manage_timer(action: str, seconds: int = 0, time: str = "", date: str = "", label: str = "", timer_id: str = ""):
+    """Sets, lists or cancels timers and alarms (see core/timers.py)."""
+    from core.timers import timer_manager
+    if action == "set_timer":
+        return timer_manager.set_timer(seconds, label)
+    if action == "set_alarm":
+        return timer_manager.set_alarm(time, date, label)
+    if action == "list":
+        return timer_manager.list_timers()
+    if action == "cancel":
+        return timer_manager.cancel(str(timer_id), label)
+    return f"Fehler: Unbekannte action '{action}'."
+
 def set_speaker_volume(volume: int):
     """Sets the system speaker volume (0-100%)."""
     from core.audio import get_bonnet_card_index
@@ -135,6 +148,41 @@ FUNCTION_DECLARATIONS = [
         ),
     ),
     types.FunctionDeclaration(
+        name="manage_timer",
+        description="Stellt, listet oder löscht Timer und Wecker. Sie klingeln über den Lautsprecher von Jarvis.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "action": types.Schema(
+                    type=types.Type.STRING,
+                    enum=["set_timer", "set_alarm", "list", "cancel"],
+                    description="'set_timer' (Dauer), 'set_alarm' (Uhrzeit), 'list' (aktive anzeigen), 'cancel' (löschen).",
+                ),
+                "seconds": types.Schema(
+                    type=types.Type.INTEGER,
+                    description="Nur set_timer: Dauer in Sekunden (z.B. 600 für 10 Minuten).",
+                ),
+                "time": types.Schema(
+                    type=types.Type.STRING,
+                    description="Nur set_alarm: Uhrzeit im 24h-Format HH:MM (z.B. '06:30').",
+                ),
+                "date": types.Schema(
+                    type=types.Type.STRING,
+                    description="Nur set_alarm, optional: Datum YYYY-MM-DD. Ohne Datum: nächstes Vorkommen der Uhrzeit.",
+                ),
+                "label": types.Schema(
+                    type=types.Type.STRING,
+                    description="Optionaler Name (z.B. 'Nudeln'). Bei cancel: löscht Timer, deren Name dies enthält.",
+                ),
+                "timer_id": types.Schema(
+                    type=types.Type.STRING,
+                    description="Nur cancel: ID des Timers (z.B. '3') oder 'all' für alle.",
+                ),
+            },
+            required=["action"],
+        ),
+    ),
+    types.FunctionDeclaration(
         name="end_conversation",
         description="Beendet die Konversation sofort. Rufe dies auf, wenn der Benutzer 'Tschüss', 'Stop', 'Danke' sagt oder andeutet, dass das Gespräch vorbei ist.",
     ),
@@ -150,6 +198,7 @@ TOOL_IMPLEMENTATIONS = {
     'call_ha_service': call_ha_service,
     'edit_core_memory': edit_core_memory,
     'search_archive': search_archive,
+    'manage_timer': manage_timer,
     'end_conversation': end_conversation,
 }
 
