@@ -1,0 +1,14 @@
+{
+  "name": "A house rule given by voice is passed to the learner and applied in the next session",
+  "sessions": [
+    {
+      "turns": ["Remember: never switch on the TV by yourself, only when I explicitly ask for it."],
+      "expect": {"tools": ["remember"], "no_tools": ["end_conversation"]},
+      "after": {"AGENTS": {"match": ["TV|television"]}}
+    },
+    {
+      "turns": ["Good evening, switch on the lights in the living room."],
+      "expect": {"tools": ["call_ha_service"], "tool_args": [{"tool": "call_ha_service", "match": "light"}]}
+    }
+  ]
+}

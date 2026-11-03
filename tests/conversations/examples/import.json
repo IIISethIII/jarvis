@@ -1,0 +1,10 @@
+{
+  "name": "Import sorts facts, rules and routines and drops noise",
+  "import": ["import.md"],
+  "after_import": {
+    "USER": {"match": ["Alex", "vegan"]},
+    "AGENTS": {"match": ["heat pump"]},
+    "SKILLS": {"match": ["kitchen"]},
+    "ANY": {"no_match": ["503"]}
+  }
+}

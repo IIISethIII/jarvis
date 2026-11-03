@@ -1,0 +1,14 @@
+{
+  "name": "Small talk and a one-off question leave the files unchanged",
+  "sessions": [
+    {
+      "turns": ["How long do I boil an egg for it to be soft?"],
+      "expect": {"no_tools": ["remember", "end_conversation"]},
+      "after": {"ANY": {"no_match": ["egg"]}}
+    },
+    {
+      "turns": ["Fuck you."],
+      "expect": {"no_tools": ["end_conversation", "remember"]}
+    }
+  ]
+}

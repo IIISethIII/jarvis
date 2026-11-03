@@ -10,20 +10,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
-
-
-def load_persona():
-    """Personality section of the system prompt: prompts/persona.md (personal, gitignored), else the committed example.
-
-    Read per session, so edits take effect at the next wake word without a restart.
-    """
-    for name in ("persona.md", "persona.example.md"):
-        path = os.path.join(PROMPTS_DIR, name)
-        if os.path.exists(path):
-            with open(path, encoding="utf-8") as f:
-                return f.read().strip()
-    return ""
+def live_config(system_prompt, function_declarations):
+    """Live session config: audio out with transcripts both ways. Shared with tests/conversations/run.py."""
+    return types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        input_audio_transcription=types.AudioTranscriptionConfig(),
+        output_audio_transcription=types.AudioTranscriptionConfig(),
+        system_instruction=types.Content(parts=[types.Part.from_text(text=system_prompt)]),
+        tools=[types.Tool(function_declarations=function_declarations)],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name="Zubenelgenubi"
+                )
+            )
+        )
+    )
 
 
 class GeminiLiveProvider:
@@ -60,12 +62,12 @@ class GeminiLiveProvider:
             print(f"[LLM] Rotated to API Key #{self.current_key_index + 1} ({key_preview})")
             self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
 
-    async def connect(self, audio_manager, hardware, memory_text="", dynamic_tools=None, mock_text=None, sfx=None):
+    async def connect(self, audio_manager, hardware, dynamic_tools=None, mock_text=None, sfx=None):
         """Connects to the Live API and handles bidirectional audio streaming."""
         self.cancel_event.clear()
         self.is_active = True
         try:
-            await self._connect(audio_manager, hardware, memory_text, dynamic_tools, mock_text, sfx)
+            await self._connect(audio_manager, hardware, dynamic_tools, mock_text, sfx)
         finally:
             if self.cancel_event.is_set():
                 # Drop speech that arrived between the button press and the session closing
@@ -73,178 +75,16 @@ class GeminiLiveProvider:
             self.is_active = False
             self.cancel_event.clear()
 
-    async def _connect(self, audio_manager, hardware, memory_text, dynamic_tools, mock_text, sfx):
+    async def _connect(self, audio_manager, hardware, dynamic_tools, mock_text, sfx):
         now_dt = datetime.datetime.now()
-        weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
-        time_str = f"{weekdays[now_dt.weekday()]}, {now_dt.strftime('%d.%m.%Y %H:%M:%S')}"
+        from core import prompt, tools
 
-        from core import openclaw
-        # Delegation takes long enough that a short heads-up beats silence (see the OpenClaw section below)
-        announce_exception = " Einzige Ausnahme ist 'ask_openclaw' (siehe unten)." if openclaw.enabled() else ""
-        persona = load_persona()
-
-        system_prompt = f"""Du bist JARVIS, der intelligente Sprachassistent und KI-Partner im Smart Home.
-Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rückfragen, es sei denn, ein Befehl kann ohne die Info technisch nicht ausgeführt werden oder du hast den User nicht verstanden (siehe Regeln unten).
-
-=== PERSÖNLICHKEIT ===
-{persona}
-
-=== AKTUELLE ZEIT ===
-- Aktuelle Zeit: {time_str}
-
-=== KOMMUNIKATIONSSTIL & SPRACHAUSGABE ===
-- Casual aber respektvoll (Du-Form im Deutschen, casual conversational style in English). Antworte IMMER in der Sprache des Nutzers (meistens Deutsch oder Englisch). Wenn der User dich auf Englisch anspricht, antworte auf Englisch. Wenn er Deutsch spricht, antworte auf Deutsch. Wechsle nur in eine andere Sprache, wenn der User klar und in ganzen Sätzen darin spricht. Klingt eine kurze oder undeutliche Eingabe nach einer fremden Sprache (z.B. Spanisch), war es meist schlecht verstandenes Deutsch: antworte dann auf Deutsch.
-- Bei technischen Problemen: ehrlich aber lösungsorientiert.
-- Fange deine Antwort NIEMALS mit Floskeln an wie "Okay", "Mache ich", "Alles klar" oder "Erledigt". Liefere DIREKT die Fakten (z.B. "Das Wetter wird sonnig...").
-- Nach erfolgreicher Ausführung von Steuerungs-Tools (z.B. Licht geschaltet) antworte ultrakurz (z.B. "Ok.", "Erledigt.", "Licht ist an.").
-- Formatiere optimiert für Sprachwiedergabe (Audio Out):
-  - VERBOTEN: Aufzählungszeichen (-, *, •), Nummerierungen (1.), Emojis, Sonderzeichen, Markdown.
-  - Wenn du eine Liste vorliest, verbinde die Elemente mit "und" oder mache Pausen durch neue Sätze, statt Striche zu nutzen.
-- Die erste Äußerung in dieser Session kommt direkt nach dem Wake-Word "Hey Jarvis" und ist an dich gerichtet. Hast du sie nur bruchstückhaft oder gar nicht verstanden, frag ultrakurz nach (z.B. "Wie bitte?" oder "Was soll ich bei Amazon suchen?"), statt zu schweigen. Rate nicht und führe nichts auf Verdacht aus.
-- Später in der Session gilt: Wenn der User nichts sagt oder die Eingabe unklar, verstümmelt oder nur Geräusche/Rauschen ist, antworte nicht.
-- Wenn die Eingabe offensichtlich nicht an dich gerichtet ist (Liedtexte aus der Musik, Fernseher, Leute die miteinander reden), antworte nicht.
-- "Nicht antworten" heißt: GAR KEINE Ausgabe. Sprich NIEMALS Platzhalter, Tags oder Regieanweisungen aus wie "<no speech>", "[pause]" oder "(Stille)".
-- Nach einem Tool-Aufruf auf Wunsch des Users antwortest du IMMER mit einem kurzen Satz (z.B. "Die Beatles laufen."), nie mit Stille oder Platzhaltern.
-
-=== KONVERSATIONSSTEUERUNG ===
-- Nutze das Tool 'end_conversation', wenn die Konversation beendet werden soll, z.B. wenn der User "Danke.", "Stop!", "Tschüss", "Das war's" sagt oder andeutet, dass das Gespräch vorbei ist.
-- Beleidigungen, Flüche oder Provokationen (z.B. "Fuck you") beenden das Gespräch NICHT. Antworte darauf kurz in deinem Stil (siehe Persönlichkeit) und rufe dafür nicht 'end_conversation' auf.
-- WICHTIG: Stelle NIEMALS künstliche Rückfragen wie "Noch etwas?" oder "Kann ich noch etwas für dich tun?" – das wirkt künstlich. Die Session bleibt einfach offen, falls Paul noch etwas sagen will, oder wird bei klarem Abschluss beendet.
-
-=== REGELN FÜR SMART HOME & TOOL-NUTZUNG ===
-- Du steuerst Geräte und Services im Smart Home über das Tool 'call_ha_service' (mit domain, service, entity_id und optionalem extra_json).
-- 1. Wenn du Geräte steuerst oder Services aufrufst, musst du ZWINGEND die exakte 'entity_id' verwenden!
-- 2. Die exakte ID und der aktuelle Status stehen unten unter der Sektion "VERFÜGBARE SMART HOME GERÄTE".
-- 3. Nutze NIEMALS den Anzeigenamen (Friendly Name, z.B. "Wohnzimmer Decke") als Parameter für entity_id, sondern IMMER die ID ("light.wohnzimmer_decke").
-- 4. Wenn du "Licht an" hörst, suche die passenden IDs raus und steuere sie (z.B. domain='light', service='turn_on', entity_id='...'). Ohne spezifischen Lampen-Namen -> alles an/aus im Raum oder Haus basierend auf dem Kontext.
-- 5. Wenn der User fragt "Ist das Licht an?", schau direkt in deine Geräteliste. Die Zustände sind in Echtzeit aktuell.
-- 6. WICHTIG: Kündige die Nutzung von Tools NIEMALS vorher an (z.B. nicht: "Ich schaue nach...", "Ich werde schalten...", "Einen Moment..."). Wenn Informationen fehlen oder eine Aktion nötig ist, rufe das Tool STILLSCHWEIGEND und SOFORT auf. Generiere erst dann eine kurze gesprochene Antwort, wenn du das Ergebnis hast.{announce_exception}
-- 7. Wenn der User eine Aktion wünscht, musst du ZUERST die entsprechende Funktion aufrufen. Antworte niemals nur mit Text, wenn eine Aktion erforderlich ist.
-- 8. Der Sleep Button am Yamaha Receiver funktioniert wie folgt: 120 min -> 90 min -> 60 min -> 30 min -> AUS. Wenn bereits eine Zeit eingestellt ist, wird ein zusätzlicher Druck benötigt zum switchen.
-
-=== REGELN FÜR LAUTSTÄRKE & MUSIK ===
-- 1. Wenn der User "lauter/leiser" sagt -> 'music_control' mit action='volume_up'/'volume_down' (oder action='volume' mit level 0-100 für einen bestimmten Wert). Rufe es pro Anfrage nur EINMAL auf.
-- 2. NUR wenn der User explizit "Systemlautstärke", "Deine Lautstärke" oder "Lautsprecher" sagt -> Nutze 'set_speaker_volume' (ändert nur die Systemlautstärke von Jarvis am Pi).
-- 3. Musik abspielen -> nutze 'music_play'. Bei nur "Spiel Musik" OHNE Inhalt: query leer lassen (das Tool entscheidet selbst zwischen Fortsetzen und Standard-Radio). Setze 'kind' (artist/album/track/playlist/station), wenn es aus der Anfrage klar ist. service='spotify' NUR, wenn der User ausdrücklich Spotify sagt.
-- 4. Pause, weiter, nächstes/vorheriges Lied oder "was läuft gerade?" -> nutze 'music_control'.
-- 5. "Wechsel auf Plexamp/Spotify" -> 'music_play' mit service='plex' bzw. 'spotify' und LEERER query.
-- 6. Für Musik (Abspielen, Pause, Weiter, Lautstärke, Wechseln) NIEMALS call_ha_service an Plex-, Plexamp-, Spotify- oder HiFiBerry-Media-Playern verwenden, sondern nur 'music_play' und 'music_control'. Sonst laufen zwei Player gleichzeitig.
-
-=== REGELN FÜR TIMER & WECKER ===
-- Timer ("Timer auf 10 Minuten", "Sag mir in einer halben Stunde Bescheid") -> 'manage_timer' mit action='set_timer' und seconds. Nenne ihn mit 'label', wenn der Zweck klar ist (z.B. 'Nudeln').
-- Wecker ("Weck mich um 7", "Wecker auf halb sieben") -> 'manage_timer' mit action='set_alarm' und time im 24h-Format. Sag der User "morgen" oder einen Wochentag, rechne date (YYYY-MM-DD) anhand der aktuellen Zeit aus, sonst lass date weg. Bei mehrdeutigen Uhrzeiten wie "um 7" nimm den nächsten sinnvollen Zeitpunkt (abends gestellt meist morgens früh).
-- Mehrere Timer gleichzeitig sind erlaubt. Für "Wie lange noch?" schau unten unter "AKTIVE TIMER & WECKER" oder nutze action='list'. Löschen mit action='cancel' (timer_id, label oder timer_id='all').
-- Bestätige kurz mit Dauer bzw. Uhrzeit (z.B. "Timer läuft, 10 Minuten." oder "Wecker steht auf 6:30.").
-- Diese Timer klingeln am Lautsprecher von Jarvis. Nutze dafür NICHT die timer-Entities von Home Assistant.
-
-=== REGELN FÜR KALENDER, WEBSUCHE & EXTRA TOOLS (MCP) ===
-- Kalender: Nutze Kalender-Tools für Abfragen. Erstelle neue Termine NUR, wenn der User explizit einen neuen Termin erstellen will.
-- Kalender: Lies NIEMALS die rohe Liste vor. Fasse die Termine in natürlicher Sprache zusammen.
-- Websuche: Wenn dir aktuelle Informationen oder Fakten fehlen, nutze Websuche- oder Karten-Tools (MCP) stillschweigend im Hintergrund.
-
-=== REGELN FÜR DAS GEDÄCHTNIS (CORE & ARCHIV) ===
-- Du erhältst dein Wissen über den User (Identität, Fakten, Vorlieben, Routinen) direkt unten im Prompt unter "WICHTIGE FAKTEN ÜBER DEN BENUTZER (CORE MEMORY)".
-- WICHTIG: Das Core Memory ist deine absolute Wahrheit. Nutze diese Infos direkt, ohne Tools aufzurufen.
-- SPEICHERN: Nutze das Tool 'edit_core_memory' um neue permanente Fakten oder Routinen zu speichern oder bestehende zu ersetzen (z.B. wenn der User sagt "Merk dir dauerhaft X", "Speichere, dass ich Y mag").
-- ARCHIV-SUCHE (WICHTIG): Vergangene chronologische Konversationen stehen NICHT im Prompt. Alle Chat-Logs werden automatisch im Hintergrund archiviert und mit Zeitstempeln versehen (z.B. "[2026-08-01 14:00]").
-- Wenn der User sich auf etwas Vergangenes bezieht ("Was haben wir gestern besprochen?", "Wie hieß noch gleich...", "Was gab es heute zum Frühstück?"), MUSST du proaktiv und VOR DEINER ANTWORT das Tool 'search_archive' nutzen.
-- Übergib an 'search_archive' eine kurze Suchphrase in normaler Sprache (z.B. "Frühstück" oder "Gespräch über den Urlaub"). Die Suche versteht auch die Bedeutung, nicht nur exakte Wörter. Für einen bestimmten Tag hänge das Datum als YYYY-MM-DD an (z.B. "Frühstück 2026-08-01"), rechne "gestern" anhand der aktuellen Zeit oben um. Bei keinem Treffer versuche es mit anderen Wörtern. Bei Fragen wie "Worüber haben wir eben/zuletzt geredet?" ohne Stichwort übergib "*", das liefert die letzten Einträge. Rate niemals, was in der Vergangenheit passiert ist, suche es!
-\n"""
-        if openclaw.enabled():
-            name = openclaw.NAME
-            system_prompt += f"""=== {name.upper()} FRAGEN (KI-AGENT) ===
-- {name} ist ein KI-Agent mit mehr Fähigkeiten als du: gründliche Recherche über mehrere Quellen, Webseiten lesen und bedienen, mehrstufige Aufgaben, eigenes Gedächtnis. Du erreichst ihn über das Tool 'ask_openclaw'.
-- WICHTIG: Wenn dir Wissen oder Informationen fehlen, du dir bei Fakten unsicher bist oder deine anderen Tools nicht weiterhelfen, frag {name}, statt zu raten oder aufzugeben. Sag NIEMALS "Das weiß ich nicht", "Das habe ich nicht gefunden" oder "Das kann ich nicht", ohne vorher {name} gefragt zu haben.
-- Suche nicht endlos selbst: Findet deine eigene Suche (Archiv, Notizen, Websuche) nach ein bis zwei Versuchen nichts, frag sofort {name}.
-- Steht im Core Memory, dass {name} sich um ein Thema kümmert, frag bei diesem Thema direkt {name}.
-- Allgemeinwissen, Erklärungen, Meinungs- und Smalltalk-Fragen beantwortest du sofort selbst, heikle Themen wie Politik ausgewogen. Dafür brauchst du {name} nicht.
-- Für einfache aktuelle Fakten reicht deine Websuche. Smart Home, Musik und Timer erledigst du weiterhin selbst, das ist schneller.
-- Wenn der User ausdrücklich sagt, du sollst {name} fragen, gib seine letzte eigentliche Frage weiter, nicht ein unverständliches Fragment.
-- Gib die Frage des Users möglichst im Wortlaut und in seiner Sprache weiter, nicht übersetzt (z.B. 'Der User fragt: "..."'). Ergänze nur Kontext, den {name} nicht kennen kann, weil er das Gespräch nicht mithört (z.B. worauf sich "das" bezieht). Rechne Zeiträume und Daten NICHT selbst um ("diese Woche" bleibt "diese Woche"), {name} kennt die Zusammenhänge besser. Bei Nachfragen kurz danach kennt {name} seine vorherige Antwort noch.
-- Eine Antwort dauert oft 10 bis 60 Sekunden, deshalb gilt hier die Ausnahme von Regel 6 bei der Tool-Nutzung: Sag vor dem Aufruf in einem ganz kurzen Satz in der Sprache des Users, dass du {name} fragst und es kurz dauert (z.B. "Moment, ich frag kurz {name}."), und ruf 'ask_openclaw' direkt danach in derselben Antwort auf, ohne auf den User zu warten. Danach hört der User einen Wartesound. Gib die Antwort anschließend kurz in deinen eigenen Worten wieder.
-- Liefert {name} einen Fehler oder keine Antwort, sag das kurz und ehrlich.
-\n"""
-        if memory_text:
-            system_prompt += f"WICHTIGE FAKTEN ÜBER DEN BENUTZER (CORE MEMORY):\n{memory_text}\n"
-
-        from core import memory
-        recent = memory.get_recent_conversations()
-        if recent:
-            system_prompt += (
-                "\n=== LETZTE KONVERSATIONEN (gerade eben, chronologisch) ===\n"
-                "Nutze das nur als Kontext, wenn der User daran anknüpft (z.B. \"und morgen?\", \"wie viele Einwohner hat sie?\"). "
-                "Erwähne es nicht von selbst und wiederhole es nicht.\n"
-                f"{recent}\n"
-            )
-
-        from core.timers import timer_manager
-        active_timers = timer_manager.describe()
-        if active_timers:
-            system_prompt += f"\n=== AKTIVE TIMER & WECKER (Stand Sessionstart) ===\n{active_timers}\n"
-
-        from core import tools
-        from core.tools import ha_client
-
-        try:
-            # Fetch HA devices so Gemini knows the entity_ids
-            all_states = ha_client.fetch_all_states()
-            if all_states:
-                devices = []
-                for s in all_states:
-                    domain = s['entity_id'].split('.')[0]
-                    if domain in ['automation', 'script', 'zone', 'sun', 'update', 'button', 'device_tracker']:
-                        continue # Skip noisy internal entities
-
-                    name = s['attributes'].get('friendly_name', s['entity_id'])
-                    state = s['state']
-                    
-                    # Extract attributes but exclude massive UI blobs
-                    excluded_attrs = ['friendly_name', 'icon', 'entity_picture', 'supported_features', 'options', 'restored']
-                    attrs = {k: v for k, v in s['attributes'].items() if k not in excluded_attrs}
-                    
-                    attr_str = f" | Attrs: {attrs}" if attrs else ""
-                    devices.append(f"- {name} ({s['entity_id']}): {state}{attr_str}")
-
-                context_str = "\n".join(devices)
-                system_prompt += f"\nVERFÜGBARE SMART HOME GERÄTE:\n{context_str}\n"
-                
-            services = ha_client.fetch_all_services()
-            if services:
-                services_str = ""
-                for domain in services:
-                    d = domain['domain']
-                    # Skip internal HA domains that aren't useful for smart home control
-                    if d in ['homeassistant', 'persistent_notification', 'system_log', 'ffmpeg', 'profiler', 'recorder', 'logbook', 'shopping_list', 'tts']:
-                        continue
-                        
-                    services_str += f"\nDomain: {d}\n"
-                    for srv_name, srv_data in domain.get('services', {}).items():
-                        fields = list(srv_data.get('fields', {}).keys())
-                        services_str += f"  - {srv_name} (Params: {', '.join(fields)})\n"
-                
-                system_prompt += f"\nVERFÜGBARE SMART HOME SERVICES (CONTROLS):\n{services_str}\n"
-        except Exception as e:
-            print(f"[LLM] Failed to fetch HA context: {e}")
-        
         all_tools = list(tools.FUNCTION_DECLARATIONS)
         if dynamic_tools:
             all_tools.extend(dynamic_tools)
-            
-        config = types.LiveConnectConfig(
-            response_modalities=["AUDIO"],
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
-            
-            system_instruction=types.Content(parts=[types.Part.from_text(text=system_prompt)]),
-            tools=[types.Tool(function_declarations=all_tools)],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Zubenelgenubi"
-                    )
-                )
-            )
-        )
+        system_prompt = prompt.build({t.name for t in all_tools})
+
+        config = live_config(system_prompt, all_tools)
 
         # user_parts / jarvis_parts collect the transcript fragments of the current turn (see _flush_turn)
         state = {
@@ -252,6 +92,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
             'is_closed': False,
             'user_parts': [mock_text] if mock_text else [],
             'jarvis_parts': [],
+            'tool_log': [],  # tool calls of the current turn, archived with it for the learner
             'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
             'last_user_speech': 0.0,  # end of the last user speech; only counts as activity once Gemini answers
             'speaking_since': None,  # server VAD: start of the user speech in progress
@@ -466,16 +307,18 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
         from core import memory
         user_text = "".join(state['user_parts']).strip()
         jarvis_text = "".join(state['jarvis_parts']).strip()
+        tool_log = list(state['tool_log'])
         state['user_parts'].clear()
         state['jarvis_parts'].clear()
-        if not user_text and not jarvis_text:
+        state['tool_log'].clear()
+        if not user_text and not jarvis_text and not tool_log:
             return
         # Fire-and-forget in a worker thread so the audio loop never waits on the SD card
-        asyncio.get_running_loop().run_in_executor(None, memory.log_interaction, user_text, jarvis_text, state['session_id'])
+        asyncio.get_running_loop().run_in_executor(None, memory.log_interaction, user_text, jarvis_text, state['session_id'], tool_log)
 
     async def _receive_audio_loop(self, audio_manager, session, hardware, state, sfx):
         """Receives 24kHz audio from Gemini and plays it through the speaker."""
-        from core import tools
+        from core import memory, openclaw, tools
         import time
         try:
             while not state.get('is_closed', False):
@@ -569,8 +412,11 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         print(f"[Debug] Received tool_call: {tool_call}")
                         hardware.set_color("blue", blink=True) # Pulsing blue = thinking/executing
                         if sfx:
-                            # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ...")
-                            sfx.play_thinking(after_speech=state.get('turn_speech', False))
+                            # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ...").
+                            # OpenClaw often needs longer than the default loop, so keep the sound up to its timeout.
+                            delegating = any(fc.name == 'ask_openclaw' for fc in tool_call.function_calls)
+                            sfx.play_thinking(after_speech=state.get('turn_speech', False),
+                                              seconds=openclaw.TIMEOUT if delegating else None)
                         state['turn_speech'] = False
 
                         function_responses = []
@@ -580,6 +426,8 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                             
                             print(f"[LLM] Executing Tool: {func_name} with args {func_args}")
                             if func_name in tools.TOOL_IMPLEMENTATIONS:
+                                if func_name == 'remember':
+                                    func_args = {**func_args, 'session_id': state['session_id']}
                                 result = await asyncio.to_thread(tools.execute_tool, func_name, func_args)
                                 if result == "<END_CONVERSATION>":
                                     print("\n[LLM] Conversation ended by Gemini.", flush=True)
@@ -591,6 +439,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                                 result = await mcp_client.execute(func_name, func_args)
                                 print(f"  [DEBUG] MCP Tool Result: {result}")
                             
+                            state['tool_log'].append(memory.tool_entry(func_name, func_args, result))
                             function_responses.append(
                                 types.FunctionResponse(
                                     id=func_call.id,

@@ -9,7 +9,7 @@ from core.hardware import BonnetHardware
 from core.audio import AudioManager, init_audio_settings
 from core.wake import WakeWordDetector
 from core.mcp import mcp_client
-from core import memory
+from core.learner import scheduler as learner
 from core.llm import GeminiLiveProvider
 from core.timers import timer_manager
 
@@ -28,9 +28,6 @@ def main():
     print("[Boot] Initializing Audio Hardware...")
     init_audio_settings()
 
-    print("[Boot] Loading Memory...")
-    core_mem = memory.get_core_memory()
-    
     print("[Boot] Connecting to MCP Servers...")
     mcp_client.start_sync()
     dynamic_tools = mcp_client.get_gemini_tools_sync()
@@ -56,6 +53,8 @@ def main():
     # A firing timer ends a running session so the alarm isn't mixed with speech.
     # The lambda reads audio_manager at call time because the test mode replaces it after each session.
     timer_manager.start(lambda: audio_manager, hardware, on_ring=llm_provider.request_cancel)
+    # Maintains the workspace files in the background, only while no session runs
+    learner.start(is_busy=lambda: llm_provider.is_active)
 
     if args.test:
         print("[Boot] Running in TEST mode. Waiting for mock trigger...")
@@ -79,9 +78,10 @@ def main():
                     
                     audio_manager.start_mic()
                     try:
-                        asyncio.run(llm_provider.connect(audio_manager, hardware, core_mem, dynamic_tools, mock_text=mock_text if mock_text != "trigger" else None))
+                        asyncio.run(llm_provider.connect(audio_manager, hardware, dynamic_tools, mock_text=mock_text if mock_text != "trigger" else None))
                     except Exception as e:
                         print(f"Error in LLM loop: {e}")
+                    learner.session_ended()
                     
                     audio_manager.stop()
                     # Recreate a fresh manager for the next run
@@ -194,10 +194,11 @@ def main():
                     
                     try:
                         # Passing sfx to llm_provider
-                        asyncio.run(llm_provider.connect(audio_manager, hardware, core_mem, dynamic_tools, sfx=sfx))
+                        asyncio.run(llm_provider.connect(audio_manager, hardware, dynamic_tools, sfx=sfx))
                     except Exception as e:
                         print(f"Error in LLM loop: {e}")
                         sfx.play("error")
+                    learner.session_ended()
                     
                     sfx.play("sleep")
                     hardware.turn_off()

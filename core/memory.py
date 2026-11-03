@@ -5,10 +5,9 @@ import base64
 import hashlib
 from datetime import datetime
 
-# Wir speichern die Daten lokal im /data Ordner (oder wo immer V3 läuft)
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-CORE_MEMORY_FILE = os.path.join(DATA_DIR, "core_memory.md")
+# JARVIS_DATA_DIR lets tests run against a throwaway copy
+DATA_DIR = os.getenv("JARVIS_DATA_DIR") or os.path.join(BASE_DIR, "data")
 ARCHIVE_FILE = os.path.join(DATA_DIR, "archive.jsonl")
 SEARCH_WINDOW_BYTES = 4 * 1024 * 1024  # newest part of the archive that search_archive scans
 CONTEXT_WINDOW_BYTES = 128 * 1024  # newest part of the archive scanned for recent sessions
@@ -22,58 +21,24 @@ def _ensure_files():
     if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
     
-    if not os.path.exists(CORE_MEMORY_FILE):
-        with open(CORE_MEMORY_FILE, "w", encoding="utf-8") as f:
-            f.write("# Jarvis Core Memory\n\nThis file contains fundamental facts about the user.\n")
-            
     if not os.path.exists(ARCHIVE_FILE):
         with open(ARCHIVE_FILE, "w", encoding="utf-8") as f:
             pass
 
 _ensure_files()
 
-def get_core_memory() -> str:
-    """Reads the core memory markdown file and returns it."""
-    try:
-        with open(CORE_MEMORY_FILE, "r", encoding="utf-8") as f:
-            return f.read()
-    except Exception as e:
-        return f"Error reading core memory: {e}"
+TOOL_RESULT_CHARS = 300  # archived per tool call; enough for the learner to see what worked or failed
 
-def edit_core_memory(action: str, fact: str, replace_text: str = "") -> str:
-    """
-    Edits the core memory file.
-    action: 'append' or 'replace'
-    fact: the new fact to append, or the exact text to be replaced
-    replace_text: if action is 'replace', the text to replace the fact with
-    """
-    try:
-        if action == "append":
-            with open(CORE_MEMORY_FILE, "a", encoding="utf-8") as f:
-                f.write(f"\n- {fact}")
-            return f"Successfully appended fact: {fact}"
-            
-        elif action == "replace":
-            with open(CORE_MEMORY_FILE, "r", encoding="utf-8") as f:
-                content = f.read()
-                
-            if fact not in content:
-                return f"Error: Could not find exactly '{fact}' in the core memory."
-                
-            new_content = content.replace(fact, replace_text)
-            
-            with open(CORE_MEMORY_FILE, "w", encoding="utf-8") as f:
-                f.write(new_content)
-            return f"Successfully replaced fact."
-            
-        else:
-            return "Error: Action must be 'append' or 'replace'"
-            
-    except Exception as e:
-        return f"Error editing core memory: {e}"
 
-def log_interaction(user_text: str, assistant_text: str, session_id: str = ""):
-    """Appends a conversation turn to the archive.jsonl log. session_id groups the turns of one wake-word session."""
+def tool_entry(name, args, result):
+    """Compact record of one tool call for the archive."""
+    args = {k: v for k, v in (args or {}).items() if k != "session_id"}
+    return {"name": name, "args": args, "result": str(result)[:TOOL_RESULT_CHARS]}
+
+
+def log_interaction(user_text: str, assistant_text: str, session_id: str = "", tools: list = None):
+    """Appends a conversation turn to the archive.jsonl log. session_id groups the turns of one wake-word session;
+    tools are the turn's tool calls (see tool_entry)."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     entry = {
         "timestamp": now_str,
@@ -82,6 +47,8 @@ def log_interaction(user_text: str, assistant_text: str, session_id: str = ""):
     }
     if session_id:
         entry["session"] = session_id
+    if tools:
+        entry["tools"] = tools
     try:
         with open(ARCHIVE_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")

@@ -1,0 +1,5 @@
+- The user is called Alex and prefers short answers.
+- Alex is vegan.
+- The heat pump is switched off in summer, never switch it on between June and August.
+- Morning routine: when Alex says good morning, switch on the kitchen light, read the weather and the first calendar event.
+- [error] memory extraction failed: 503

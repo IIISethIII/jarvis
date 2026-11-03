@@ -12,7 +12,7 @@ venv/
 # Personal data (core memory, conversation archive)
 data/
 
-# Personal prompt files (committed: *.example.md)
+# Old personal prompt file (now data/workspace/SOUL.md)
 prompts/persona.md
 
 # Audio recordings / runtime files
@@ -28,3 +28,6 @@ trigger.tmp
 
 # Personal Claude notes
 CLAUDE.local.md
+
+# Personal conversation tests and import material
+tests/conversations/local/

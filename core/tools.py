@@ -3,6 +3,7 @@ from google.genai import types
 from core.ha import HomeAssistant
 from core import memory
 from core import openclaw
+from core import workspace
 
 # Initialize a global instance of the HA wrapper
 ha_client = HomeAssistant()
@@ -31,8 +32,15 @@ def call_ha_service(domain: str, service: str, entity_id: str, extra_json: str =
     except Exception as e:
         return f"Error: {e}"
 
-def edit_core_memory(action: str, fact: str, replace_text: str = ""):
-    return memory.edit_core_memory(action, fact, replace_text)
+def remember(note: str, session_id: str = ""):
+    """Queues a note for the learner (core/learner.py), which updates the workspace files after the session."""
+    if not (note or "").strip():
+        return "Error: note is empty."
+    workspace.add_note(note, session_id)
+    return "Noted. It will be worked into your files after this conversation; follow it right away until then."
+
+def load_skills(names: list):
+    return workspace.load_skills(names)
 
 def search_archive(query: str):
     return memory.search_archive(query)
@@ -77,7 +85,7 @@ FUNCTION_DECLARATIONS = [
     ),
     types.FunctionDeclaration(
         name="set_speaker_volume",
-        description="Ändert die Lautstärke des Lautsprechers (0-100%).",
+        description="Ändert die Lautstärke des eigenen Lautsprechers von Jarvis (0-100%). Nur wenn der User ausdrücklich 'Systemlautstärke', 'deine Lautstärke' oder 'Lautsprecher' sagt, nicht für Musik.",
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
@@ -116,25 +124,32 @@ FUNCTION_DECLARATIONS = [
         ),
     ),
     types.FunctionDeclaration(
-        name="edit_core_memory",
-        description="Fügt eine wichtige Information über den Benutzer (Core Memory) hinzu oder ersetzt eine bestehende. Verwende dies nur für permanente Fakten, Vorlieben oder Routinen.",
+        name="remember",
+        description="Passes on everything you should remember, forget, change or learn: facts and preferences of the user, house rules, your personality, corrections of how you do something, 'undo that'. A reviewer works it into your files after the conversation. Never for unclear fragments.",
         parameters=types.Schema(
             type=types.Type.OBJECT,
             properties={
-                "action": types.Schema(
+                "note": types.Schema(
                     type=types.Type.STRING,
-                    description="'append' um einen neuen Fakt hinzuzufügen, oder 'replace' um einen bestehenden zu ersetzen.",
-                ),
-                "fact": types.Schema(
-                    type=types.Type.STRING,
-                    description="Der neue Fakt (bei append) oder der exakte alte Text der ersetzt werden soll (bei replace).",
-                ),
-                "replace_text": types.Schema(
-                    type=types.Type.STRING,
-                    description="Der neue Text (nur bei action='replace' erforderlich).",
+                    description="The request in the user's words and language, plus the context needed to understand it (e.g. what 'that' refers to).",
                 ),
             },
-            required=["action", "fact"],
+            required=["note"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="load_skills",
+        description="Loads one or more of your learned skills (procedures, listed under SKILLS) before you act.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "names": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                    description="Skill names from the SKILLS list.",
+                ),
+            },
+            required=["names"],
         ),
     ),
     types.FunctionDeclaration(
@@ -217,7 +232,8 @@ TOOL_IMPLEMENTATIONS = {
     'get_pi_temperature': get_pi_temperature,
     'set_speaker_volume': set_speaker_volume,
     'call_ha_service': call_ha_service,
-    'edit_core_memory': edit_core_memory,
+    'remember': remember,
+    'load_skills': load_skills,
     'search_archive': search_archive,
     'manage_timer': manage_timer,
     'ask_openclaw': ask_openclaw,

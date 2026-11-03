@@ -1,3 +1,4 @@
+import math
 import os
 
 class SFXManager:
@@ -21,12 +22,13 @@ class SFXManager:
             self.audio_manager.stop_playback()
             self.audio_manager.play_chunk(self.sounds[name], is_tts=False)
 
-    def play_thinking(self, after_speech=False):
-        """Plays the thinking sound looped (~38 s). after_speech queues it behind speech that is still playing instead of cutting it off."""
+    def play_thinking(self, after_speech=False, seconds=None):
+        """Plays the thinking sound looped for about `seconds` (default 38). after_speech queues it behind speech that is still playing instead of cutting it off."""
+        seconds = seconds or 38
         if "thinking" in self.sounds:
             if not after_speech:
                 self.audio_manager.stop_playback()
-            # 10 loops of the thinking sound, pushed as separate chunks 
-            # so they can be cleared from the queue if the tool finishes early!
-            for _ in range(10):
+            # Loops pushed as separate chunks so they can be cleared from the queue if the tool finishes early!
+            loop_seconds = len(self.sounds["thinking"]) / (24000 * 2)
+            for _ in range(max(1, math.ceil(seconds / loop_seconds))):
                 self.audio_manager.play_chunk(self.sounds["thinking"], is_tts=False)

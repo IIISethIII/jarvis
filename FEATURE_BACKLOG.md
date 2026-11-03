@@ -77,10 +77,14 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 - [ ] **Lange OpenClaw-Aufgaben asynchron.** `ask_openclaw` blockiert bis zur Antwort (Timeout `OPENCLAW_TIMEOUT`, 90 s). Für größere Recherchen besser: Jarvis gibt die Aufgabe per `POST /hooks/agent` ab (Gateway-Option `hooks.enabled`, eigener Hook-Token), sagt „läuft“ und beendet die Session. Das Ergebnis kommt per Messenger (`channel`/`to`) oder über die Remote-Mailbox (siehe unten) zurück, und Jarvis liest es vor.
 
-- [ ] **Dynamische Persona- und User-Dateien (USER.md, ähnlich OpenClaw).** Baut auf dem Portabilitäts-Punkt „Persönlichen Prompt aus `core/llm.py` herauslösen" auf und sollte **vor** der Basic-Memory-Anbindung kommen, weil die sich in diese Prompt-Struktur einhängt.
-  - Der Prompt wird aus Dateien zusammengesetzt, zum Beispiel `prompts/persona.md` und `prompts/USER.md` (gitignored, mit committeten `*.example.md`). Die allgemeinen Regeln bleiben im Code.
-  - Offen: Wie weit Jarvis die Dateien selbst pflegt (wie heute `edit_core_memory`) und ob Core Memory darin aufgeht.
-  - Dateien bei jedem `connect()` neu lesen statt nur beim Boot, damit Änderungen ohne Neustart greifen.
+- [ ] **Workspace-Dateien und Lerner (wie OpenClaw/Hermes).** In Arbeit seit 2026-11-03 (Branch `feat/workspace-learner`). Kommt **vor** der Basic-Memory-Anbindung, weil die sich in diese Struktur einhängt.
+  - Fester Kern im Repo (`prompts/core.md`, englisch) plus Tool-Guides (`prompts/guides/`, nur aktiv, wenn ihre Tools geladen sind). Persönliches liegt im gitignorten Workspace `data/workspace/`: `SOUL.md` (Persönlichkeit), `AGENTS.md` (Hausregeln), `USER.md` (Direktiven zum User), `MEMORY.md` (Fakten), `skills/`. Alles wird bei jedem Wake Word neu gelesen, mit Zeichenbudget pro Datei.
+  - Skills: Im Prompt steht nur die Liste, Jarvis lädt einen oder mehrere per `load_skills`.
+  - Jarvis schreibt nie selbst in Dateien. Ausdrückliches („Merk dir …“, „Sei frecher“) gibt er per `remember` an den **Lerner** weiter, einen Text-Agenten (Gemini Flash, Fallback-Kette), der im Hintergrund läuft: direkt nach einer Session mit Notizen, gesammelt nach normalen Sessions, nachts als Reflexion (Wo war Jarvis nicht hilfreich?) und beim Fakten-Import.
+  - Gegen schleichendes Verwässern: Der Lerner macht nur gezielte Einzeländerungen an Einträgen (add/replace/remove), schreibt nie eine Datei komplett neu, hat eine Obergrenze pro Lauf, und unberührter Text bleibt byte-gleich. Jede Änderung mit Begründung in `CHANGES.md`, Kopie in `.history/`, Rückgängig per Sprache.
+  - Onboarding (`scripts/onboard.py`: Sprache, Name, Persönlichkeit, Integrationen) und Fakten-Import (`scripts/import_facts.py`) für andere Nutzer.
+  - Gesprächstests (`tests/conversations/`): Text-Sessions gegen eine Workspace-Kopie, ohne dass der Pi spricht.
+  - Später: Skills, die 30 Tage ungenutzt sind, archivieren. HA-Geräteliste im Prompt verkleinern (155.000 Zeichen, davon 117.000 aus sieben Mensa- und DWD-Sensoren).
 
 - [ ] **Basic Memory als optionales Wissen anbinden.** Ziel: Jarvis kennt das Wissen der anderen Agenten. Ohne `memory.local` in `core/mcp_config.json` muss alles wie bisher laufen, denn Basic Memory ist keine Voraussetzung für das Repo.
   - **Lesen:** Eine Prompt-Regel wie „Für Wissen über den User, Projekte oder Dinge, die andere Agenten wissen, nutze `bm_search`". Die Regel kommt nur in den Prompt, wenn die `bm_*`-Tools geladen sind.
