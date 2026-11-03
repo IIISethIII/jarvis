@@ -32,6 +32,10 @@ def call_ha_service(domain: str, service: str, entity_id: str, extra_json: str =
     except Exception as e:
         return f"Error: {e}"
 
+def get_ha_details(entity_ids: list = None, query: str = "", service_domain: str = ""):
+    from core import ha_context
+    return ha_context.details(entity_ids, query, service_domain)
+
 def remember(note: str, session_id: str = ""):
     """Queues a note for the learner (core/learner.py), which updates the workspace files after the session."""
     if not (note or "").strip():
@@ -121,6 +125,28 @@ FUNCTION_DECLARATIONS = [
                 ),
             },
             required=["domain", "service", "entity_id"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_ha_details",
+        description="Reads Home Assistant details that are not in your device overview: the current state with all attributes (forecasts, menus, lists, departures), a search over all entities, or the parameters of a domain's services.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "entity_ids": types.Schema(
+                    type=types.Type.ARRAY,
+                    items=types.Schema(type=types.Type.STRING),
+                    description="Exact entity_ids whose current state and all attributes you need.",
+                ),
+                "query": types.Schema(
+                    type=types.Type.STRING,
+                    description="Optional: part of an entity_id or name to search for (e.g. 'kitchen', 'mensa').",
+                ),
+                "service_domain": types.Schema(
+                    type=types.Type.STRING,
+                    description="Optional: a domain (e.g. 'light', 'climate') whose services and their parameters you need.",
+                ),
+            },
         ),
     ),
     types.FunctionDeclaration(
@@ -232,6 +258,7 @@ TOOL_IMPLEMENTATIONS = {
     'get_pi_temperature': get_pi_temperature,
     'set_speaker_volume': set_speaker_volume,
     'call_ha_service': call_ha_service,
+    'get_ha_details': get_ha_details,
     'remember': remember,
     'load_skills': load_skills,
     'search_archive': search_archive,
@@ -247,7 +274,8 @@ def execute_tool(name, args):
     if name in TOOL_IMPLEMENTATIONS:
         try:
             result = TOOL_IMPLEMENTATIONS[name](**args)
-            print(f"  [DEBUG] Tool Result: {result}", flush=True)
+            text = str(result)
+            print(f"  [DEBUG] Tool Result: {text[:500]}{'…' if len(text) > 500 else ''}", flush=True)
             return result
         except Exception as e:
             error_msg = f"Error executing {name}: {str(e)}"

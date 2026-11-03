@@ -30,7 +30,7 @@ Important behaviour:
 
 ## Prompt, workspace and learner
 
-- **Order** (`core/prompt.py`): `prompts/core.md` (fixed rules, English, `{assistant_name}`/`{language}`/`{time}` placeholders) → workspace `SOUL.md` (personality) and `AGENTS.md` (house rules) → tool guides from `prompts/guides/` → skill list → `USER.md`, `MEMORY.md` → recent changes → live context (recent conversations, timers, HA devices and services).
+- **Order** (`core/prompt.py`): `prompts/core.md` (fixed rules, English, `{assistant_name}`/`{language}`/`{time}` placeholders) → workspace `SOUL.md` (personality) and `AGENTS.md` (house rules) → tool guides from `prompts/guides/` → skill list → `USER.md`, `MEMORY.md` → recent changes → live context (recent conversations, timers, HA overview).
 - **Guides** (`prompts/guides/*.md`) explain a tool. Their frontmatter `requires: a, b` names the tools that must all be loaded, otherwise the guide is left out. New tool rules go into a guide, not into `core.md`.
 - **Workspace** (`core/workspace.py`, `data/workspace/`, gitignored, seeded from `prompts/templates/`): `SOUL`, `AGENTS`, `USER`, `MEMORY` with character budgets, plus `skills/<name>.md` (frontmatter `description`, optional `always: true`). Jarvis sees only the skill names and loads bodies with `load_skills`.
 - **Jarvis never edits the workspace.** The tool `remember` queues a note in `.inbox.jsonl`.
@@ -53,6 +53,7 @@ Important behaviour:
   - Hide tools per server with an optional blacklist of fnmatch patterns: `"exclude": ["library_delete_*"]`. Default: all tools.
   - Free-form object parameters (no `properties`, e.g. a gateway's `call_tool` `arguments`) are offered to Gemini as JSON strings and decoded before the call.
 - Optional delegation (`core/openclaw.py`, tool `ask_openclaw`): with `OPENCLAW_URL` and `OPENCLAW_TOKEN` set, Jarvis hands what it can't answer to an OpenClaw agent via the Gateway's `/v1/chat/completions`. The tool declaration and its prompt section only exist when configured. Answers take ~5–60 s. It is the one exception to the prompt's "never announce a tool" rule: Gemini says a short heads-up, then calls the tool, and the thinking SFX is queued behind that speech instead of cutting it off. The idle timer is paused meanwhile. Test off the Pi with `python3 -m core.openclaw "Frage"`.
+- **Home Assistant context** (`core/ha_context.py`): the prompt only gets a compact overview, one line per entity with state, unit and short attributes, grouped by room if HA has areas, plus service names per domain. A trailing `+` marks more data. The tool `get_ha_details` returns the full attributes, the current state, a search over all entities, the parameters of a domain's services, and for `todo`/`weather`/`calendar` entities the service response (items, daily forecast, events). Above `JARVIS_HA_CONTEXT_CHARS` (30000) the overview drops attributes, then read-only entities. Don't put full attribute dumps back into the prompt: single sensors (forecasts, canteen menus) are 10–30k chars each.
 - Local tools run **synchronously inside the async receive loop** and block audio meanwhile. Wrap slow ones (`asyncio.to_thread`).
 - Tool results go back as `{"result": ...}`. Keep them short; they cost tokens and latency.
 

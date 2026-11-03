@@ -53,6 +53,17 @@ class HomeAssistant:
             print(f"[HA Error] call_service failed for {domain}.{service}: {e}")
             return None
             
+    def call_service_response(self, domain, service, service_data=None):
+        """Calls a service that returns data (e.g. todo.get_items, weather.get_forecasts)."""
+        try:
+            r = self.session.post(f"{self.ha_url}/api/services/{domain}/{service}?return_response",
+                                  json=service_data or {}, timeout=10)
+            r.raise_for_status()
+            return r.json().get("service_response")
+        except requests.exceptions.RequestException as e:
+            print(f"[HA Error] call_service_response failed for {domain}.{service}: {e}")
+            return None
+
     def fetch_all_states(self):
         """Fetches all states to build the context for the LLM."""
         try:

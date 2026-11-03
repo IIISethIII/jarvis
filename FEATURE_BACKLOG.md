@@ -18,7 +18,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - Wake-Word „Hey Jarvis" (openWakeWord), Mikrofon-Watchdog (Timeout, Rapid-Fire, Stille, Queue-Stau)
 - Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach Stille (Timer ab Ende der Sprachausgabe, unbeantwortete Sprache zählt nur begrenzt)
 - LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
-- Smart Home: generisches `call_ha_service` + alle HA-States und -Services im System-Prompt
+- Smart Home: generisches `call_ha_service`, kompakte Geräte- und Service-Übersicht im Prompt (`core/ha_context.py`, Budget `JARVIS_HA_CONTEXT_CHARS`), Details, Suche, Service-Parameter, Einkaufslisten, Wettervorhersagen und Kalender auf Nachfrage per `get_ha_details`
 - `set_speaker_volume`, `get_pi_temperature`, `end_conversation`
 - Core Memory (`data/core_memory.md`, append/replace), `search_archive` (Stichwortsuche)
 - MCP: `mcp.local` (SearXNG-Websuche, Firecrawl, Context7, Gmail, Google Calendar, Google Tasks, Mail, Fitbit/Google Health), `memory.local` (Basic Memory), HiFiBerry (Player, Queue, Library)
@@ -50,7 +50,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - v2: `main.py → lower_volume` und `restore_volume` (liest `sensor.hifiberry_plexamp_volume`, halbiert die Lautstärke und stellt sie danach wieder her). Dazu ein SIGTERM-Handler, der beim Stoppen des Dienstes die Lautstärke zurücksetzt und die LEDs ausschaltet.
   - Für v3: vor `llm_provider.connect()` absenken, im `finally` wiederherstellen. Alternativ direkt über das HiFiBerry-MCP oder die HA-`media_player`-Lautstärke.
 
-- [ ] **Service-Antworten aus HA lesen (`return_response`).** Das schaltet gleich mehrere Features frei. `call_ha_service` kann aktuell nur auslösen, aber keine Daten zurückgeben.
+- [ ] **Service-Antworten aus HA lesen (`return_response`).** Teilweise erledigt: `get_ha_details` holt für `todo.*`, `weather.*` und `calendar.*` die Antwort von `get_items`, `get_forecasts` (täglich) und `get_events` (7 Tage). Offen: stündliche Vorhersage und beliebige andere Services mit Antwort.
   - Erweiterung: optionaler Parameter `return_response: bool` → `POST /api/services/{domain}/{service}?return_response=true` und das JSON zurückgeben.
   - Damit funktionieren: `weather.get_forecasts` (Wettervorhersage stündlich/täglich, inkl. „Regnet es gleich? Kann ich Rad fahren?"), `todo.get_items` (Einkaufsliste vorlesen), `calendar.get_events`.
   - v2 als Vorlage: `services/ha.py → get_weather_forecast` (inkl. Fallback auf das `forecast`-Attribut und Begrenzung auf 12 h bzw. 5 Tage).
@@ -84,7 +84,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - Gegen schleichendes Verwässern: Der Lerner macht nur gezielte Einzeländerungen an Einträgen (add/replace/remove), schreibt nie eine Datei komplett neu, hat eine Obergrenze pro Lauf, und unberührter Text bleibt byte-gleich. Jede Änderung mit Begründung in `CHANGES.md`, Kopie in `.history/`, Rückgängig per Sprache.
   - Onboarding (`scripts/onboard.py`: Sprache, Name, Persönlichkeit, Integrationen) und Fakten-Import (`scripts/import_facts.py`) für andere Nutzer.
   - Gesprächstests (`tests/conversations/`): Text-Sessions gegen eine Workspace-Kopie, ohne dass der Pi spricht.
-  - Später: Skills, die 30 Tage ungenutzt sind, archivieren. HA-Geräteliste im Prompt verkleinern (155.000 Zeichen, davon 117.000 aus sieben Mensa- und DWD-Sensoren).
+  - Später: Skills, die 30 Tage ungenutzt sind, archivieren.
 
 - [ ] **Basic Memory als optionales Wissen anbinden.** Ziel: Jarvis kennt das Wissen der anderen Agenten. Ohne `memory.local` in `core/mcp_config.json` muss alles wie bisher laufen, denn Basic Memory ist keine Voraussetzung für das Repo.
   - **Lesen:** Eine Prompt-Regel wie „Für Wissen über den User, Projekte oder Dinge, die andere Agenten wissen, nutze `bm_search`". Die Regel kommt nur in den Prompt, wenn die `bm_*`-Tools geladen sind.

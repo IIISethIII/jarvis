@@ -4,7 +4,7 @@
   venv/bin/python -m tests.conversations.run my.json --workspace data/workspace --keep /tmp/ws-out
 
 Each scenario runs in a throwaway data directory (archive and workspace), starting from a copy of --workspace
-or from the templates. Tools with side effects are stubbed; remember, load_skills, search_archive and
+or from the templates. Tools with side effects are stubbed; remember, load_skills, search_archive, get_ha_details and
 end_conversation run for real. After every session the learner runs like in production, then the checks.
 Needs network, the Gemini keys from .env and (by default) Home Assistant and the MCP servers for the tool list.
 
@@ -45,7 +45,7 @@ STUBS = {
     "get_pi_temperature": "Pi Temperature: temp=45.0'C",
     "ask_openclaw": "Test: no answer available in this test.",
 }
-REAL = {"remember", "load_skills", "search_archive", "end_conversation"}
+REAL = {"remember", "load_skills", "search_archive", "get_ha_details", "end_conversation"}
 TURN_TIMEOUT = 90
 QUIET_TIMEOUT = 25  # no message at all for this long = the model stays silent
 
@@ -179,8 +179,7 @@ def run_scenario(path, args, log):
     stubs = sc.get("stubs", {})
     for i, s in enumerate(sc.get("sessions", []), 1):
         label = f"session {i}"
-        system_prompt = prompt.build({d.name for d in declarations}, include_ha=not args.no_ha,
-                                     attr_limit=args.ha_attr_limit or None)
+        system_prompt = prompt.build({d.name for d in declarations}, include_ha=not args.no_ha)
         config = llm.live_config(system_prompt, declarations)
         session_id = time.strftime("%Y%m%d-%H%M%S") + f"-{i}"
         log(f" {label} ({len(system_prompt)} prompt chars)")
@@ -215,8 +214,6 @@ def main():
     parser.add_argument("--chain", action="store_true", help="scenarios share one workspace, in the given order")
     parser.add_argument("--no-ha", action="store_true", help="leave out the Home Assistant devices")
     parser.add_argument("--no-mcp", action="store_true", help="don't load the MCP tool list")
-    parser.add_argument("--ha-attr-limit", type=int, default=800,
-                        help="cut HA attributes per entity to this many chars to save Live quota (0 = full, like production)")
     parser.add_argument("--learner-models", help="comma-separated, overrides JARVIS_LEARNER_MODELS")
     args = parser.parse_args()
 

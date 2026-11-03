@@ -97,7 +97,7 @@ def _has_entries(text):
     return any(line.strip() and not line.lstrip().startswith("#") for line in text.splitlines())
 
 
-def live_context(include_ha=True, attr_limit=None):
+def live_context(include_ha=True):
     """Recent conversations, active timers and the Home Assistant devices and services."""
     from core import memory
     out = ""
@@ -116,58 +116,13 @@ def live_context(include_ha=True, attr_limit=None):
         out += f"\n=== ACTIVE TIMERS & ALARMS (as of session start) ===\n{active_timers}\n"
 
     if include_ha:
-        out += _ha_context(attr_limit)
+        try:
+            from core import ha_context
+            out += ha_context.prompt_section()
+        except Exception as e:
+            print(f"[Prompt] Failed to fetch HA context: {e}", flush=True)
     return out
 
 
-def _ha_context(attr_limit=None):
-    from core.tools import ha_client
-    out = ""
-    try:
-        # Fetch HA devices so Gemini knows the entity_ids
-        all_states = ha_client.fetch_all_states()
-        if all_states:
-            devices = []
-            for s in all_states:
-                domain = s['entity_id'].split('.')[0]
-                if domain in ['automation', 'script', 'zone', 'sun', 'update', 'button', 'device_tracker']:
-                    continue  # Skip noisy internal entities
-
-                name = s['attributes'].get('friendly_name', s['entity_id'])
-                state = s['state']
-
-                # Extract attributes but exclude massive UI blobs
-                excluded_attrs = ['friendly_name', 'icon', 'entity_picture', 'supported_features', 'options', 'restored']
-                attrs = {k: v for k, v in s['attributes'].items() if k not in excluded_attrs}
-
-                attr_str = f" | Attrs: {attrs}" if attrs else ""
-                if attr_limit and len(attr_str) > attr_limit:
-                    attr_str = attr_str[:attr_limit] + "...}"
-                devices.append(f"- {name} ({s['entity_id']}): {state}{attr_str}")
-
-            context_str = "\n".join(devices)
-            out += f"\nAVAILABLE SMART HOME DEVICES:\n{context_str}\n"
-
-        services = ha_client.fetch_all_services()
-        if services:
-            services_str = ""
-            for domain in services:
-                d = domain['domain']
-                # Skip internal HA domains that aren't useful for smart home control
-                if d in ['homeassistant', 'persistent_notification', 'system_log', 'ffmpeg', 'profiler', 'recorder', 'logbook', 'shopping_list', 'tts']:
-                    continue
-
-                services_str += f"\nDomain: {d}\n"
-                for srv_name, srv_data in domain.get('services', {}).items():
-                    fields = list(srv_data.get('fields', {}).keys())
-                    services_str += f"  - {srv_name} (Params: {', '.join(fields)})\n"
-
-            out += f"\nAVAILABLE SMART HOME SERVICES (CONTROLS):\n{services_str}\n"
-    except Exception as e:
-        print(f"[Prompt] Failed to fetch HA context: {e}", flush=True)
-    return out
-
-
-def build(tool_names, include_ha=True, attr_limit=None):
-    """attr_limit cuts long HA attribute dumps (tests use it to save quota; production sends them in full)."""
-    return static_prompt(tool_names) + live_context(include_ha, attr_limit)
+def build(tool_names, include_ha=True):
+    return static_prompt(tool_names) + live_context(include_ha)
