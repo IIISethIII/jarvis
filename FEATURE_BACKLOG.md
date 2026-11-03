@@ -71,7 +71,11 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - v2: `services/ha.py → execute_play_music` (Kategorien artist/album/playlist/track/station, `plex://`-Content-IDs, „Library Radio" = feste Station-URL `plex://…/library/sections/6/stations/1`). Ohne Angabe wird automatisch der Plexamp-Player gewählt.
   - Prüfen, was das HiFiBerry-MCP schon abdeckt (`library_*`, `queue_add_track`, `playback_command`). Für „Library Radio" und Playlists braucht man wahrscheinlich weiter den HA-`play_media`-Weg.
 
+- [x] **„Slow Brain“ wieder da: OpenClaw fragen (`ask_openclaw`).** Umgesetzt 2026-11-02 in `core/openclaw.py`. Was Jarvis nicht weiß oder mit seinen Tools nicht schafft, gibt er als eigenständig formulierte Aufgabe an einen OpenClaw-Agenten (OpenAI-kompatibler Endpoint `/v1/chat/completions` des Gateways). Ersetzt v2s `delegate_to_backend`. Tool und Prompt-Abschnitt gibt es nur mit `OPENCLAW_URL` und `OPENCLAW_TOKEN`. Nachfragen innerhalb von `OPENCLAW_SESSION_IDLE_MIN` (30 min) landen in derselben OpenClaw-Session.
+
 ## P2 – Nützlich, mittlerer Aufwand
+
+- [ ] **Lange OpenClaw-Aufgaben asynchron.** `ask_openclaw` blockiert bis zur Antwort (Timeout `OPENCLAW_TIMEOUT`, 90 s). Für größere Recherchen besser: Jarvis gibt die Aufgabe per `POST /hooks/agent` ab (Gateway-Option `hooks.enabled`, eigener Hook-Token), sagt „läuft“ und beendet die Session. Das Ergebnis kommt per Messenger (`channel`/`to`) oder über die Remote-Mailbox (siehe unten) zurück, und Jarvis liest es vor.
 
 - [ ] **Dynamische Persona- und User-Dateien (USER.md, ähnlich OpenClaw).** Baut auf dem Portabilitäts-Punkt „Persönlichen Prompt aus `core/llm.py` herauslösen" auf und sollte **vor** der Basic-Memory-Anbindung kommen, weil die sich in diese Prompt-Struktur einhängt.
   - Der Prompt wird aus Dateien zusammengesetzt, zum Beispiel `prompts/persona.md` und `prompts/USER.md` (gitignored, mit committeten `*.example.md`). Die allgemeinen Regeln bleiben im Code.
@@ -157,7 +161,8 @@ Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts
 
 - [x] **`.env.example`** anlegen
 - [x] **`requirements.txt` aufräumen.** Die Zeile `/home/pi/aiyprojects-raspbian` ist ein lokaler Pfad und wird in v3 gar nicht genutzt (kein `aiy`-Import mehr) → entfernt, ebenso die ungenutzten `pygame`, `beautifulsoup4`, `mem0ai` und `chromadb`. `smbus2` ist als optional markiert. (Die Migrationsskripte unter `scripts/migration/` brauchen bei Bedarf zusätzlich `chromadb`.)
-- [ ] **Persönlichen Prompt aus `core/llm.py` herauslösen.** Folgendes steht dort fest im Code: „Paul", Münchner Lokalkolorit, die Yamaha-Sleep-Button-Regel, „Library Radio" und Plexamp/HiFiBerry. Das kommt nach `prompts/persona.md` (gitignored) mit committeter `prompts/persona.example.md`. Die allgemeinen Regeln bleiben im Code.
+- [ ] **Persönlichen Prompt aus `core/llm.py` herauslösen.** Folgendes steht dort fest im Code: „Paul", die Yamaha-Sleep-Button-Regel, „Library Radio" und Plexamp/HiFiBerry. Das kommt nach `prompts/persona.md` (gitignored) mit committeter `prompts/persona.example.md`. Die allgemeinen Regeln bleiben im Code.
+  - Teilweise erledigt 2026-11-03: Der Abschnitt „Persönlichkeit“ (samt Münchner Lokalkolorit) kommt aus `prompts/persona.md`, ohne die Datei aus `prompts/persona.example.md`. Er wird pro Session gelesen.
 - [ ] **Werte konfigurierbar machen**, per Env oder Config-Datei:
   - Voice (`Zubenelgenubi`)
   - Mic-Gain (`* 4.0` in `_send_audio_loop`)

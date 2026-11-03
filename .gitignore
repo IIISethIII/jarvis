@@ -12,6 +12,9 @@ venv/
 # Personal data (core memory, conversation archive)
 data/
 
+# Personal prompt files (committed: *.example.md)
+prompts/persona.md
+
 # Audio recordings / runtime files
 *.wav
 *.raw

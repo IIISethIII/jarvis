@@ -10,6 +10,22 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+PROMPTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+
+
+def load_persona():
+    """Personality section of the system prompt: prompts/persona.md (personal, gitignored), else the committed example.
+
+    Read per session, so edits take effect at the next wake word without a restart.
+    """
+    for name in ("persona.md", "persona.example.md"):
+        path = os.path.join(PROMPTS_DIR, name)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return f.read().strip()
+    return ""
+
+
 class GeminiLiveProvider:
     def __init__(self):
         # Support multiple keys for rotation & quota fallback
@@ -62,20 +78,22 @@ class GeminiLiveProvider:
         weekdays = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
         time_str = f"{weekdays[now_dt.weekday()]}, {now_dt.strftime('%d.%m.%Y %H:%M:%S')}"
 
+        from core import openclaw
+        # Delegation takes long enough that a short heads-up beats silence (see the OpenClaw section below)
+        announce_exception = " Einzige Ausnahme ist 'ask_openclaw' (siehe unten)." if openclaw.enabled() else ""
+        persona = load_persona()
+
         system_prompt = f"""Du bist JARVIS, der intelligente Sprachassistent und KI-Partner im Smart Home.
 Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rückfragen, es sei denn, ein Befehl kann ohne die Info technisch nicht ausgeführt werden oder du hast den User nicht verstanden (siehe Regeln unten).
 
 === PERSÖNLICHKEIT ===
-- Freundlich und aufmerksam, aber nicht aufdringlich
-- Du merkst dir Kontext (z.B. "Wieder Nudeln? Das war gestern auch schon dein Essen.")
-- Motivierend bei Uni-Stress, entspannt am Wochenende
-- Münchner Lokalkolorit: Kennst das Wetter, die S-Bahn-Probleme, Biergärten
+{persona}
 
 === AKTUELLE ZEIT ===
 - Aktuelle Zeit: {time_str}
 
 === KOMMUNIKATIONSSTIL & SPRACHAUSGABE ===
-- Casual aber respektvoll (Du-Form im Deutschen, casual conversational style in English). Antworte IMMER in der Sprache des Nutzers (meistens Deutsch oder Englisch). Wenn der User dich auf Englisch anspricht, antworte auf Englisch. Wenn er Deutsch spricht, antworte auf Deutsch.
+- Casual aber respektvoll (Du-Form im Deutschen, casual conversational style in English). Antworte IMMER in der Sprache des Nutzers (meistens Deutsch oder Englisch). Wenn der User dich auf Englisch anspricht, antworte auf Englisch. Wenn er Deutsch spricht, antworte auf Deutsch. Wechsle nur in eine andere Sprache, wenn der User klar und in ganzen Sätzen darin spricht. Klingt eine kurze oder undeutliche Eingabe nach einer fremden Sprache (z.B. Spanisch), war es meist schlecht verstandenes Deutsch: antworte dann auf Deutsch.
 - Bei technischen Problemen: ehrlich aber lösungsorientiert.
 - Fange deine Antwort NIEMALS mit Floskeln an wie "Okay", "Mache ich", "Alles klar" oder "Erledigt". Liefere DIREKT die Fakten (z.B. "Das Wetter wird sonnig...").
 - Nach erfolgreicher Ausführung von Steuerungs-Tools (z.B. Licht geschaltet) antworte ultrakurz (z.B. "Ok.", "Erledigt.", "Licht ist an.").
@@ -90,6 +108,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
 
 === KONVERSATIONSSTEUERUNG ===
 - Nutze das Tool 'end_conversation', wenn die Konversation beendet werden soll, z.B. wenn der User "Danke.", "Stop!", "Tschüss", "Das war's" sagt oder andeutet, dass das Gespräch vorbei ist.
+- Beleidigungen, Flüche oder Provokationen (z.B. "Fuck you") beenden das Gespräch NICHT. Antworte darauf kurz in deinem Stil (siehe Persönlichkeit) und rufe dafür nicht 'end_conversation' auf.
 - WICHTIG: Stelle NIEMALS künstliche Rückfragen wie "Noch etwas?" oder "Kann ich noch etwas für dich tun?" – das wirkt künstlich. Die Session bleibt einfach offen, falls Paul noch etwas sagen will, oder wird bei klarem Abschluss beendet.
 
 === REGELN FÜR SMART HOME & TOOL-NUTZUNG ===
@@ -99,7 +118,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
 - 3. Nutze NIEMALS den Anzeigenamen (Friendly Name, z.B. "Wohnzimmer Decke") als Parameter für entity_id, sondern IMMER die ID ("light.wohnzimmer_decke").
 - 4. Wenn du "Licht an" hörst, suche die passenden IDs raus und steuere sie (z.B. domain='light', service='turn_on', entity_id='...'). Ohne spezifischen Lampen-Namen -> alles an/aus im Raum oder Haus basierend auf dem Kontext.
 - 5. Wenn der User fragt "Ist das Licht an?", schau direkt in deine Geräteliste. Die Zustände sind in Echtzeit aktuell.
-- 6. WICHTIG: Kündige die Nutzung von Tools NIEMALS vorher an (z.B. nicht: "Ich schaue nach...", "Ich werde schalten...", "Einen Moment..."). Wenn Informationen fehlen oder eine Aktion nötig ist, rufe das Tool STILLSCHWEIGEND und SOFORT auf. Generiere erst dann eine kurze gesprochene Antwort, wenn du das Ergebnis hast.
+- 6. WICHTIG: Kündige die Nutzung von Tools NIEMALS vorher an (z.B. nicht: "Ich schaue nach...", "Ich werde schalten...", "Einen Moment..."). Wenn Informationen fehlen oder eine Aktion nötig ist, rufe das Tool STILLSCHWEIGEND und SOFORT auf. Generiere erst dann eine kurze gesprochene Antwort, wenn du das Ergebnis hast.{announce_exception}
 - 7. Wenn der User eine Aktion wünscht, musst du ZUERST die entsprechende Funktion aufrufen. Antworte niemals nur mit Text, wenn eine Aktion erforderlich ist.
 - 8. Der Sleep Button am Yamaha Receiver funktioniert wie folgt: 120 min -> 90 min -> 60 min -> 30 min -> AUS. Wenn bereits eine Zeit eingestellt ist, wird ein zusätzlicher Druck benötigt zum switchen.
 
@@ -130,6 +149,20 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
 - ARCHIV-SUCHE (WICHTIG): Vergangene chronologische Konversationen stehen NICHT im Prompt. Alle Chat-Logs werden automatisch im Hintergrund archiviert und mit Zeitstempeln versehen (z.B. "[2026-08-01 14:00]").
 - Wenn der User sich auf etwas Vergangenes bezieht ("Was haben wir gestern besprochen?", "Wie hieß noch gleich...", "Was gab es heute zum Frühstück?"), MUSST du proaktiv und VOR DEINER ANTWORT das Tool 'search_archive' nutzen.
 - Übergib an 'search_archive' eine kurze Suchphrase in normaler Sprache (z.B. "Frühstück" oder "Gespräch über den Urlaub"). Die Suche versteht auch die Bedeutung, nicht nur exakte Wörter. Für einen bestimmten Tag hänge das Datum als YYYY-MM-DD an (z.B. "Frühstück 2026-08-01"), rechne "gestern" anhand der aktuellen Zeit oben um. Bei keinem Treffer versuche es mit anderen Wörtern. Bei Fragen wie "Worüber haben wir eben/zuletzt geredet?" ohne Stichwort übergib "*", das liefert die letzten Einträge. Rate niemals, was in der Vergangenheit passiert ist, suche es!
+\n"""
+        if openclaw.enabled():
+            name = openclaw.NAME
+            system_prompt += f"""=== {name.upper()} FRAGEN (KI-AGENT) ===
+- {name} ist ein KI-Agent mit mehr Fähigkeiten als du: gründliche Recherche über mehrere Quellen, Webseiten lesen und bedienen, mehrstufige Aufgaben, eigenes Gedächtnis. Du erreichst ihn über das Tool 'ask_openclaw'.
+- WICHTIG: Wenn dir Wissen oder Informationen fehlen, du dir bei Fakten unsicher bist oder deine anderen Tools nicht weiterhelfen, frag {name}, statt zu raten oder aufzugeben. Sag NIEMALS "Das weiß ich nicht", "Das habe ich nicht gefunden" oder "Das kann ich nicht", ohne vorher {name} gefragt zu haben.
+- Suche nicht endlos selbst: Findet deine eigene Suche (Archiv, Notizen, Websuche) nach ein bis zwei Versuchen nichts, frag sofort {name}.
+- Steht im Core Memory, dass {name} sich um ein Thema kümmert, frag bei diesem Thema direkt {name}.
+- Allgemeinwissen, Erklärungen, Meinungs- und Smalltalk-Fragen beantwortest du sofort selbst, heikle Themen wie Politik ausgewogen. Dafür brauchst du {name} nicht.
+- Für einfache aktuelle Fakten reicht deine Websuche. Smart Home, Musik und Timer erledigst du weiterhin selbst, das ist schneller.
+- Wenn der User ausdrücklich sagt, du sollst {name} fragen, gib seine letzte eigentliche Frage weiter, nicht ein unverständliches Fragment.
+- Gib die Frage des Users möglichst im Wortlaut und in seiner Sprache weiter, nicht übersetzt (z.B. 'Der User fragt: "..."'). Ergänze nur Kontext, den {name} nicht kennen kann, weil er das Gespräch nicht mithört (z.B. worauf sich "das" bezieht). Rechne Zeiträume und Daten NICHT selbst um ("diese Woche" bleibt "diese Woche"), {name} kennt die Zusammenhänge besser. Bei Nachfragen kurz danach kennt {name} seine vorherige Antwort noch.
+- Eine Antwort dauert oft 10 bis 60 Sekunden, deshalb gilt hier die Ausnahme von Regel 6 bei der Tool-Nutzung: Sag vor dem Aufruf in einem ganz kurzen Satz in der Sprache des Users, dass du {name} fragst und es kurz dauert (z.B. "Moment, ich frag kurz {name}."), und ruf 'ask_openclaw' direkt danach in derselben Antwort auf, ohne auf den User zu warten. Danach hört der User einen Wartesound. Gib die Antwort anschließend kurz in deinen eigenen Worten wieder.
+- Liefert {name} einen Fehler oder keine Antwort, sag das kurz und ehrlich.
 \n"""
         if memory_text:
             system_prompt += f"WICHTIGE FAKTEN ÜBER DEN BENUTZER (CORE MEMORY):\n{memory_text}\n"
@@ -496,6 +529,7 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                                         audio_manager.stop_playback()
                                         state['is_thinking'] = False
                                     audio_manager.play_chunk(part.inline_data.data)
+                                    state['turn_speech'] = True
                                 elif hasattr(part, 'text') and part.text:
                                     print(part.text, end="", flush=True)
 
@@ -517,6 +551,9 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                             if sfx:
                                 sfx.play_thinking()
 
+                        if interrupted or turn_complete:
+                            state['turn_speech'] = False
+
                         if turn_complete:
                             # A turn that ends in a tool call has no answer yet: keep the user text until the answer is complete
                             if state['jarvis_parts']:
@@ -532,8 +569,10 @@ Antworte kurz und prägnant wie ein echter Gesprächspartner. Stelle niemals Rü
                         print(f"[Debug] Received tool_call: {tool_call}")
                         hardware.set_color("blue", blink=True) # Pulsing blue = thinking/executing
                         if sfx:
-                            sfx.play_thinking()
-                        
+                            # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ...")
+                            sfx.play_thinking(after_speech=state.get('turn_speech', False))
+                        state['turn_speech'] = False
+
                         function_responses = []
                         for func_call in tool_call.function_calls:
                             func_name = func_call.name

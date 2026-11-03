@@ -23,9 +23,10 @@ Previous architecture (Live front-end + REST "slow brain" + Mem0) is tag `v2-fin
 
 Important behaviour:
 - **Half-duplex:** `AudioManager.get_audio_chunk` drops mic input while audio is playing, so the user cannot interrupt by voice.
-- **The system prompt is built per session** in `connect()`: static rules (German) + core memory + all HA entity states + all HA services (fetched live). Core memory is read **once at boot** in `main.py`, so edits only take effect after a restart.
+- **The system prompt is built per session** in `connect()`: static rules (German) + personality from `prompts/persona.md` (gitignored; falls back to `prompts/persona.example.md`, re-read every session) + core memory + all HA entity states + all HA services (fetched live). Core memory is read **once at boot** in `main.py`, so edits only take effect after a restart.
 - **API keys:** `GEMINI_KEYS` is a comma-separated pool. The key rotates after each session and on 429/quota errors.
 - **SFX** are raw PCM (24 kHz, mono, s16le) in `assets/sounds/` and go through the same output stream as speech. Convert new sounds with ffmpeg (see `convert_sounds.py`).
+  - `AudioManager.play_chunk` queues audio in 0.1 s pieces because the blocking stream write can't be interrupted. `stop_playback()` therefore cuts within 0.1 s. Don't write long buffers to the stream another way: a whole 3.8 s thinking loop used to delay every answer until it ended, with the mic open in that gap.
 
 ## Tools
 
@@ -34,6 +35,7 @@ Important behaviour:
   - The tool list is fetched **once at boot**; new tools on a server need a Jarvis restart.
   - Hide tools per server with an optional blacklist of fnmatch patterns: `"exclude": ["library_delete_*"]`. Default: all tools.
   - Free-form object parameters (no `properties`, e.g. a gateway's `call_tool` `arguments`) are offered to Gemini as JSON strings and decoded before the call.
+- Optional delegation (`core/openclaw.py`, tool `ask_openclaw`): with `OPENCLAW_URL` and `OPENCLAW_TOKEN` set, Jarvis hands what it can't answer to an OpenClaw agent via the Gateway's `/v1/chat/completions`. The tool declaration and its prompt section only exist when configured. Answers take ~5–60 s. It is the one exception to the prompt's "never announce a tool" rule: Gemini says a short heads-up, then calls the tool, and the thinking SFX is queued behind that speech instead of cutting it off. The idle timer is paused meanwhile. Test off the Pi with `python3 -m core.openclaw "Frage"`.
 - Local tools run **synchronously inside the async receive loop** and block audio meanwhile. Wrap slow ones (`asyncio.to_thread`).
 - Tool results go back as `{"result": ...}`. Keep them short; they cost tokens and latency.
 
@@ -84,6 +86,7 @@ Restarting Jarvis is expensive. On the reference Pi it takes **~45 s** until `[I
 ## Configuration
 
 - `.env`: see `.env.example`.
+- `prompts/persona.md`: Jarvis' personality, see `prompts/persona.example.md`. The content goes into the prompt verbatim, so no comments in it.
 - `core/mcp_config.json`: MCP servers.
 - `deploy/asound.conf`: ALSA setup for the reference hardware (copy to `~/.asoundrc`).
 - `deploy/jarvis.service`: systemd unit.

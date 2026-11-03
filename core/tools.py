@@ -2,6 +2,7 @@ import subprocess
 from google.genai import types
 from core.ha import HomeAssistant
 from core import memory
+from core import openclaw
 
 # Initialize a global instance of the HA wrapper
 ha_client = HomeAssistant()
@@ -35,6 +36,9 @@ def edit_core_memory(action: str, fact: str, replace_text: str = ""):
 
 def search_archive(query: str):
     return memory.search_archive(query)
+
+def ask_openclaw(task: str):
+    return openclaw.ask(task)
 
 def manage_timer(action: str, seconds: int = 0, time: str = "", date: str = "", label: str = "", timer_id: str = ""):
     """Sets, lists or cancels timers and alarms (see core/timers.py)."""
@@ -184,9 +188,26 @@ FUNCTION_DECLARATIONS = [
     ),
     types.FunctionDeclaration(
         name="end_conversation",
-        description="Beendet die Konversation sofort. Rufe dies auf, wenn der Benutzer 'Tschüss', 'Stop', 'Danke' sagt oder andeutet, dass das Gespräch vorbei ist.",
+        description="Beendet die Konversation sofort. Rufe dies auf, wenn der Benutzer 'Tschüss', 'Stop', 'Danke' sagt oder andeutet, dass das Gespräch vorbei ist. Nicht bei Beleidigungen oder Flüchen, darauf antwortest du.",
     ),
 ]
+
+# Optional: only offered to Gemini when OPENCLAW_URL and OPENCLAW_TOKEN are set
+if openclaw.enabled():
+    FUNCTION_DECLARATIONS.append(types.FunctionDeclaration(
+        name="ask_openclaw",
+        description=f"Fragt {openclaw.NAME}, einen KI-Agenten mit mehr Fähigkeiten als du (gründliche Recherche, Webseiten, mehrstufige Aufgaben, eigenes Gedächtnis). Nutze das immer, wenn du etwas nicht weißt oder deine anderen Tools nicht weiterhelfen. Die Antwort dauert oft 10 bis 60 Sekunden.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "task": types.Schema(
+                    type=types.Type.STRING,
+                    description=f"Die Frage des Users möglichst im Wortlaut und in seiner Sprache, ergänzt um Kontext aus dem Gespräch, den {openclaw.NAME} nicht kennen kann (er hört nicht mit). Zeiträume und Daten nicht selbst umrechnen.",
+                ),
+            },
+            required=["task"],
+        ),
+    ))
 
 def end_conversation():
     """Ends the conversation."""
@@ -199,6 +220,7 @@ TOOL_IMPLEMENTATIONS = {
     'edit_core_memory': edit_core_memory,
     'search_archive': search_archive,
     'manage_timer': manage_timer,
+    'ask_openclaw': ask_openclaw,
     'end_conversation': end_conversation,
 }
 
