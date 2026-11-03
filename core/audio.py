@@ -9,6 +9,9 @@ RATE = 16000
 CHANNELS = 1
 CHUNK = 512
 
+# Playback is 24 kHz mono int16: 0.1 s pieces, so stop_playback() takes effect within that time
+PLAYBACK_PIECE_BYTES = 24000 * 2 // 10
+
 # High-pass cutoff for the mic signal in Hz, 0 = off. Removes mains hum (50/60 Hz and harmonics) and rumble.
 HIGHPASS_HZ = float(os.getenv("JARVIS_MIC_HIGHPASS", "150"))
 
@@ -205,8 +208,13 @@ class AudioManager:
                 break
 
     def play_chunk(self, pcm_data, is_tts=True):
-        """Plays raw PCM data through the speaker."""
-        self.playback_queue.put((pcm_data, is_tts))
+        """Queues raw PCM data for the speaker.
+
+        Split into short pieces: the worker's blocking write can't be interrupted, so a long sound
+        (the 3.8 s thinking loop) would otherwise delay the answer after stop_playback() until it ends.
+        """
+        for i in range(0, len(pcm_data), PLAYBACK_PIECE_BYTES):
+            self.playback_queue.put((pcm_data[i:i + PLAYBACK_PIECE_BYTES], is_tts))
 
     def stop_playback(self):
         """Immediately stops current playback."""
