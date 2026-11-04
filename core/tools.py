@@ -229,7 +229,7 @@ FUNCTION_DECLARATIONS = [
     ),
     types.FunctionDeclaration(
         name="end_conversation",
-        description="Beendet die Konversation sofort. Rufe dies auf, wenn der Benutzer 'Tschüss', 'Stop', 'Danke' sagt oder andeutet, dass das Gespräch vorbei ist. Nicht bei Beleidigungen oder Flüchen, darauf antwortest du.",
+        description="Ends the conversation after a short pause. Only for a clear, complete goodbye ('Thanks', 'Bye', 'Stop', 'That's it'). Not for sentence fragments, questions, insults or swearing. When in doubt, don't call it: the session also ends after silence.",
     ),
 ]
 

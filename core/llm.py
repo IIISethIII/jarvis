@@ -48,6 +48,7 @@ class GeminiLiveProvider:
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
         self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "20"))
+        self.end_grace = float(os.getenv("JARVIS_END_GRACE", "2"))
 
     def request_cancel(self):
         """Ends the running session (thread-safe). Does nothing when idle."""
@@ -96,6 +97,7 @@ class GeminiLiveProvider:
             'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
             'last_user_speech': 0.0,  # end of the last user speech; only counts as activity once Gemini answers
             'speaking_since': None,  # server VAD: start of the user speech in progress
+            'end_requested': False,  # end_conversation was called: close after end_grace seconds of silence
         }
 
         async def _do_connect(client_instance):
@@ -222,6 +224,8 @@ class GeminiLiveProvider:
         idle = self._idle_seconds(state, audio_manager)
         if idle <= 0:
             return None
+        if state.get('end_requested') and idle > self.end_grace:
+            return f"end_conversation, {idle:.1f}s quiet"
         timeout = self.idle_timeout
         deadline = timeout
         heard_at = idle - (time.time() - state['last_user_speech'])  # seconds into the silence; < 0 = answered
@@ -385,6 +389,9 @@ class GeminiLiveProvider:
                         input_transcription = getattr(server_content, 'input_transcription', None)
                         if input_transcription is not None and getattr(input_transcription, 'text', None):
                             state['last_user_speech'] = time.time()  # becomes activity once Gemini answers
+                            if state['end_requested']:
+                                state['end_requested'] = False
+                                print("\n[LLM] User kept talking, end_conversation cancelled.", flush=True)
                             hardware.set_color("blue", blink=True) # Pulsing blue = transcribing/thinking
                             if state['jarvis_parts']:
                                 self._flush_turn(state)  # new user speech after an answer: previous exchange is done
@@ -430,10 +437,11 @@ class GeminiLiveProvider:
                                     func_args = {**func_args, 'session_id': state['session_id']}
                                 result = await asyncio.to_thread(tools.execute_tool, func_name, func_args)
                                 if result == "<END_CONVERSATION>":
-                                    print("\n[LLM] Conversation ended by Gemini.", flush=True)
-                                    if sfx:
-                                        sfx.play("success")
-                                    return # Exiting this loop terminates the connection
+                                    # Close only after a short silence (see _close_reason): server VAD sometimes ends
+                                    # the turn mid-sentence, and the rest of the sentence then cancels the end.
+                                    print(f"\n[LLM] end_conversation requested, closing after {self.end_grace:.0f}s of silence.", flush=True)
+                                    state['end_requested'] = True
+                                    result = "The session closes in a moment. Say nothing more unless the user speaks again."
                             else:
                                 from core.mcp import mcp_client
                                 result = await mcp_client.execute(func_name, func_args)
