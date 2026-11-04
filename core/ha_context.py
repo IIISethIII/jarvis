@@ -26,11 +26,12 @@ NOISE_ATTRS = {"friendly_name", "icon", "entity_picture", "supported_features", 
                "attribution", "device_class", "state_class", "unit_of_measurement", "editable", "id",
                "assumed_state", "supported_color_modes", "color_mode", "min_mireds", "max_mireds",
                "min_color_temp_kelvin", "max_color_temp_kelvin", "last_reset", "entity_id"}
-# domain -> (domain, service, extra data) whose response get_ha_details adds
+# domain -> (domain, service, extra data, label) whose response get_ha_details adds; the label marks
+# the line ("+forecast"), so Jarvis sees in the overview which data Home Assistant has
 RESPONSE_SERVICES = {
-    "todo": ("todo", "get_items", {"status": "needs_action"}),
-    "weather": ("weather", "get_forecasts", {"type": "daily"}),
-    "calendar": ("calendar", "get_events", {"duration": {"days": 7}}),
+    "todo": ("todo", "get_items", {"status": "needs_action"}, "items"),
+    "weather": ("weather", "get_forecasts", {"type": "daily"}, "forecast"),
+    "calendar": ("calendar", "get_events", {"duration": {"days": 7}}, "events"),
 }
 SHORT_ATTR = 30     # longer attribute values go behind '+'
 MAX_SHOWN_ATTRS = 4
@@ -68,7 +69,10 @@ def _line(s, with_attrs=True):
     line = f"- {_name(s)} ({s['entity_id']}): {_state(s)}"
     if shown:
         line += " [" + ", ".join(f"{k}={v}" for k, v in shown.items()) + "]"
-    if len(extra) > len(shown) or s["entity_id"].split(".")[0] in RESPONSE_SERVICES:
+    response = RESPONSE_SERVICES.get(s["entity_id"].split(".")[0])
+    if response:
+        line += f" +{response[3]}"
+    elif len(extra) > len(shown):
         line += " +"
     return line
 
@@ -137,7 +141,8 @@ def prompt_section():
     devices = devices_overview()
     out = ""
     if devices:
-        out += ("\n=== SMART HOME DEVICES (state at session start; '+' = more details via get_ha_details) ===\n"
+        out += ("\n=== SMART HOME DEVICES (state at session start; '+' = more details, '+forecast' / '+items' / "
+                "'+events' = full forecast, list items, upcoming events; all via get_ha_details) ===\n"
                 f"{devices}\n")
     services = services_overview()
     if services:

@@ -26,7 +26,7 @@ class OverviewTest(unittest.TestCase):
         self.assertNotIn("supported_color_modes", text)
         self.assertIn("- Rain (sensor.rain): 0.0 mm +", text)    # long data behind '+'
         self.assertIn("- Temp (sensor.temp): 21.5 °C\n", text)   # noise attrs dropped, no '+'
-        self.assertIn("(todo.shopping): 3 +", text)               # items via a service response
+        self.assertIn("(todo.shopping): 3 +items", text)          # items via a service response
         self.assertNotIn("automation.x", text)
 
     def test_areas(self):

@@ -107,7 +107,8 @@ def live_context(include_ha=True):
         out += (
             "\n=== RECENT CONVERSATIONS (just now, chronological) ===\n"
             "Use this only as context when the user picks up on it (e.g. \"and tomorrow?\", \"how many people live there?\"). "
-            "Don't bring it up yourself and don't repeat it.\n"
+            "Don't bring it up yourself and don't repeat it. How a question was answered there (which tool, which agent) "
+            "doesn't decide how you answer now: pick the best source for the current question again.\n"
             f"{recent}\n"
         )
 
