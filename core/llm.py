@@ -98,6 +98,7 @@ class GeminiLiveProvider:
             'last_user_speech': 0.0,  # end of the last user speech; only counts as activity once Gemini answers
             'speaking_since': None,  # server VAD: start of the user speech in progress
             'end_requested': False,  # end_conversation was called: close after end_grace seconds of silence
+            'end_call_id': None,  # its function call, answered only if the user keeps talking (_cancel_end)
         }
 
         async def _do_connect(client_instance):
@@ -320,6 +321,15 @@ class GeminiLiveProvider:
         # Fire-and-forget in a worker thread so the audio loop never waits on the SD card
         asyncio.get_running_loop().run_in_executor(None, memory.log_interaction, user_text, jarvis_text, state['session_id'], tool_log)
 
+    @staticmethod
+    async def _cancel_end(session, state):
+        """The user kept talking after end_conversation: keep the session and answer the pending call."""
+        state['end_requested'] = False
+        print("\n[LLM] User kept talking, end_conversation cancelled.", flush=True)
+        await session.send_tool_response(function_responses=[types.FunctionResponse(
+            id=state['end_call_id'], name='end_conversation',
+            response={"result": "Not ended: the user kept talking. Continue the conversation."})])
+
     async def _receive_audio_loop(self, audio_manager, session, hardware, state, sfx):
         """Receives 24kHz audio from Gemini and plays it through the speaker."""
         from core import memory, openclaw, tools
@@ -342,6 +352,8 @@ class GeminiLiveProvider:
                     activity_type = str(getattr(getattr(voice_activity, 'voice_activity_type', None), 'value', ''))
                     if activity_type == 'ACTIVITY_START':
                         state['speaking_since'] = time.time()
+                        if state['end_requested']:
+                            await self._cancel_end(session, state)
                     elif activity_type == 'ACTIVITY_END':
                         state['speaking_since'] = None
                         state['last_user_speech'] = time.time()
@@ -390,8 +402,7 @@ class GeminiLiveProvider:
                         if input_transcription is not None and getattr(input_transcription, 'text', None):
                             state['last_user_speech'] = time.time()  # becomes activity once Gemini answers
                             if state['end_requested']:
-                                state['end_requested'] = False
-                                print("\n[LLM] User kept talking, end_conversation cancelled.", flush=True)
+                                await self._cancel_end(session, state)
                             hardware.set_color("blue", blink=True) # Pulsing blue = transcribing/thinking
                             if state['jarvis_parts']:
                                 self._flush_turn(state)  # new user speech after an answer: previous exchange is done
@@ -414,11 +425,16 @@ class GeminiLiveProvider:
                     tool_call = getattr(response, 'tool_call', None)
                     if tool_call is not None:
                         state['last_activity'] = time.time()
+                        # end_conversation alone stays silent: no thinking loop, no success sound, and the
+                        # thinking loop started by the user's last words stops (no speech has played since)
+                        ending = all(fc.name == 'end_conversation' for fc in tool_call.function_calls)
+                        if ending and state.get('is_thinking', False):
+                            audio_manager.stop_playback()
                         state['is_thinking'] = False
                         state['tool_running'] = True
                         print(f"[Debug] Received tool_call: {tool_call}")
                         hardware.set_color("blue", blink=True) # Pulsing blue = thinking/executing
-                        if sfx:
+                        if sfx and not ending:
                             # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ...").
                             # OpenClaw often needs longer than the default loop, so keep the sound up to its timeout.
                             delegating = any(fc.name == 'ask_openclaw' for fc in tool_call.function_calls)
@@ -439,9 +455,13 @@ class GeminiLiveProvider:
                                 if result == "<END_CONVERSATION>":
                                     # Close only after a short silence (see _close_reason): server VAD sometimes ends
                                     # the turn mid-sentence, and the rest of the sentence then cancels the end.
+                                    # No tool response yet: any answer makes Gemini talk again (it once spoke "<no speech>").
+                                    # _cancel_end sends it if the user keeps talking.
                                     print(f"\n[LLM] end_conversation requested, closing after {self.end_grace:.0f}s of silence.", flush=True)
                                     state['end_requested'] = True
-                                    result = "The session closes in a moment. Say nothing more unless the user speaks again."
+                                    state['end_call_id'] = func_call.id
+                                    state['tool_log'].append(memory.tool_entry(func_name, func_args, result))
+                                    continue
                             else:
                                 from core.mcp import mcp_client
                                 result = await mcp_client.execute(func_name, func_args)
@@ -456,11 +476,11 @@ class GeminiLiveProvider:
                                 )
                             )
                         
-                        if sfx:
-                            sfx.play("success")
-                        
-                        print("[Debug] Sending tool responses back...")
-                        await session.send_tool_response(function_responses=function_responses)
+                        if function_responses:
+                            if sfx:
+                                sfx.play("success")
+                            print("[Debug] Sending tool responses back...")
+                            await session.send_tool_response(function_responses=function_responses)
                         state['tool_running'] = False
                         state['last_activity'] = time.time()
                         hardware.set_color("blue", blink=True) # Back to speaking/waiting
