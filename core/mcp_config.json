@@ -1,6 +1,6 @@
 {
   "servers": {
     "fastmcp-gateway": {"url": "http://mcp.local/sse", "type": "sse"},
-    "basic-memory": {"url": "http://memory.local/sse", "type": "sse"}
+    "basic-memory": {"url": "http://memory.local/sse", "type": "sse", "include": ["bm_search", "bm_read"]}
   }
 }

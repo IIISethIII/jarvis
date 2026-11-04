@@ -35,7 +35,8 @@ def _read(path):
 def render(text, **extra):
     from core import openclaw
     values = _Vars(assistant_name=assistant_name(), language=language(),
-                   openclaw_name=openclaw.NAME, OPENCLAW_NAME=openclaw.NAME.upper(), **extra)
+                   openclaw_name=openclaw.NAME, OPENCLAW_NAME=openclaw.NAME.upper(),
+                   bm_project=os.getenv("JARVIS_BASIC_MEMORY_PROJECT", "main"), **extra)
     return text.format_map(values)
 
 

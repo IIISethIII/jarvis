@@ -4,8 +4,8 @@
   venv/bin/python -m tests.conversations.run my.json --workspace data/workspace --keep /tmp/ws-out
 
 Each scenario runs in a throwaway data directory (archive and workspace), starting from a copy of --workspace
-or from the templates. Tools with side effects are stubbed; remember, load_skills, search_archive, get_ha_details and
-end_conversation run for real. After every session the learner runs like in production, then the checks.
+or from the templates. Tools with side effects are stubbed; remember, load_skills, search_archive, get_ha_details,
+end_conversation and the read-only Basic Memory tools (bm_search, bm_read) run for real. After every session the learner runs like in production, then the checks.
 Needs network, the Gemini keys from .env and (by default) Home Assistant and the MCP servers for the tool list.
 
 Scenario file (JSON):
@@ -46,6 +46,7 @@ STUBS = {
     "ask_openclaw": "Test: no answer available in this test.",
 }
 REAL = {"remember", "load_skills", "search_archive", "get_ha_details", "end_conversation"}
+REAL_MCP = {"bm_search", "bm_read"}  # read-only MCP tools, run for real unless the scenario stubs them
 TURN_TIMEOUT = 90
 QUIET_TIMEOUT = 25  # no message at all for this long = the model stays silent
 
@@ -144,6 +145,9 @@ async def _receive_turn(session, stubs, session_id, log):
                         args["session_id"] = session_id
                     result = tools.execute_tool(fc.name, args)
                     args.pop("session_id", None)
+                elif fc.name in REAL_MCP and fc.name not in stubs:
+                    from core.mcp import mcp_client
+                    result = await mcp_client.execute(fc.name, args)
                 else:
                     result = stubs.get(fc.name, STUBS.get(fc.name, "No data (test stub)."))
                 log(f"  tool {fc.name}({json.dumps(args, ensure_ascii=False)[:200]}) -> {str(result)[:120]}")

@@ -200,13 +200,15 @@ class MCPManager:
         """Fetches tools from all active MCP sessions."""
         gemini_tools = []
         for server_name, session in list(self.sessions.items()):
-            # Optional per-server blacklist in mcp_config.json, e.g. "exclude": ["library_delete_*"]
+            # Optional per-server filters in mcp_config.json: "include": ["bm_search"] (allowlist), "exclude": ["library_delete_*"]
+            include = self.servers.get(server_name, {}).get("include")
             exclude = self.servers.get(server_name, {}).get("exclude", [])
             try:
                 response = await session.list_tools()
                 skipped = 0
                 for tool in response.tools:
-                    if any(fnmatch.fnmatchcase(tool.name, pattern) for pattern in exclude):
+                    if (include is not None and not any(fnmatch.fnmatchcase(tool.name, p) for p in include)) \
+                            or any(fnmatch.fnmatchcase(tool.name, pattern) for pattern in exclude):
                         skipped += 1
                         continue
                     # Replace hyphens with underscores for Gemini
