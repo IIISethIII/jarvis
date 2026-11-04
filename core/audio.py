@@ -11,6 +11,14 @@ CHUNK = 512
 
 # Playback is 24 kHz mono int16: 0.1 s pieces, so stop_playback() takes effect within that time
 PLAYBACK_PIECE_BYTES = 24000 * 2 // 10
+FADE_SECONDS = 0.15
+
+
+def fade(pcm, start, end):
+    """Scales 24 kHz int16 PCM linearly from gain `start` to `end` (fade in: 0 -> 1, fade out: 1 -> 0)."""
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    samples *= np.linspace(start, end, len(samples), dtype=np.float32)
+    return samples.astype(np.int16).tobytes()
 
 # High-pass cutoff for the mic signal in Hz, 0 = off. Removes mains hum (50/60 Hz and harmonics) and rumble.
 HIGHPASS_HZ = float(os.getenv("JARVIS_MIC_HIGHPASS", "150"))
@@ -221,6 +229,23 @@ class AudioManager:
         with self.playback_queue.mutex:
             self.playback_queue.queue.clear()
             self.is_playing = False
+
+    def fade_out(self):
+        """Like stop_playback, but the next FADE_SECONDS of queued sound fade out instead of a hard cut (for SFX)."""
+        with self.playback_queue.mutex:
+            items = list(self.playback_queue.queue)
+            self.playback_queue.queue.clear()
+            self.is_playing = False
+            if None in items:  # stop() sentinel: keep shutting down
+                self.playback_queue.queue.append(None)
+                self.playback_queue.not_empty.notify()
+                return
+            tail = b"".join(chunk for chunk, _ in items)[:int(FADE_SECONDS * 24000) * 2]
+            if tail:
+                tail = fade(tail, 1.0, 0.0)
+                for i in range(0, len(tail), PLAYBACK_PIECE_BYTES):
+                    self.playback_queue.queue.append((tail[i:i + PLAYBACK_PIECE_BYTES], False))
+                self.playback_queue.not_empty.notify()
 
     def stop(self):
         """Cleanly terminates the audio sub-process and PyAudio streams."""

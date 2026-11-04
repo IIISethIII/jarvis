@@ -10,6 +10,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+PRE_ANSWER_THINKING_S = 10  # thinking sound while waiting for Gemini's first answer (no tool call yet)
+
+
 def live_config(system_prompt, function_declarations):
     """Live session config: audio out with transcripts both ways. Shared with tests/conversations/run.py."""
     return types.LiveConnectConfig(
@@ -49,6 +52,7 @@ class GeminiLiveProvider:
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
         self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "20"))
         self.end_grace = float(os.getenv("JARVIS_END_GRACE", "2"))
+        self.thinking_delay = float(os.getenv("JARVIS_THINKING_DELAY", "0.8"))
 
     def request_cancel(self):
         """Ends the running session (thread-safe). Does nothing when idle."""
@@ -99,6 +103,7 @@ class GeminiLiveProvider:
             'speaking_since': None,  # server VAD: start of the user speech in progress
             'end_requested': False,  # end_conversation was called: close after end_grace seconds of silence
             'end_call_id': None,  # its function call, answered only if the user keeps talking (_cancel_end)
+            'thinking_at': None,  # when the thinking sound starts if Gemini hasn't answered yet (_start_thinking_if_due)
         }
 
         async def _do_connect(client_instance):
@@ -120,7 +125,7 @@ class GeminiLiveProvider:
                 
                 send_task = asyncio.create_task(self._send_audio_loop(audio_manager, session, state))
                 receive_task = asyncio.create_task(self._receive_audio_loop(audio_manager, session, hardware, state, sfx))
-                inactivity_task = asyncio.create_task(self._inactivity_loop(state, audio_manager))
+                inactivity_task = asyncio.create_task(self._inactivity_loop(state, audio_manager, sfx))
                 
                 done, pending = await asyncio.wait(
                     [send_task, receive_task, inactivity_task],
@@ -240,10 +245,25 @@ class GeminiLiveProvider:
             unanswered = f", speech running > {self.max_speech:.0f}s (background audio?)"
         return f"{idle:.0f}s without activity (timeout {timeout:.0f}s{unanswered})"
 
-    async def _inactivity_loop(self, state, audio_manager):
-        """Closes the connection once the user stopped talking to Jarvis (see _close_reason) or when cancelled (button)."""
+    def _start_thinking_if_due(self, state, sfx):
+        """Starts the thinking sound once the user has been quiet for thinking_delay and Gemini hasn't answered.
+
+        Quick answers then come without it, instead of a sound that starts mid-sentence and is cut right away.
+        Capped at PRE_ANSWER_THINKING_S in case Gemini stays silent; a tool call extends it.
+        """
+        due = state.get('thinking_at')
+        if due and time.time() >= due and not state.get('speaking_since'):
+            state['thinking_at'] = None
+            state['is_thinking'] = True
+            if sfx:
+                sfx.play_thinking(after_speech=True, seconds=PRE_ANSWER_THINKING_S, fade_in=True)
+
+    async def _inactivity_loop(self, state, audio_manager, sfx=None):
+        """Closes the connection once the user stopped talking to Jarvis (see _close_reason) or when cancelled (button).
+        Also starts the delayed thinking sound."""
         while not state.get('is_closed', False):
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
+            self._start_thinking_if_due(state, sfx)
             if self.cancel_event.is_set():
                 print("\n[LLM] Session cancelled by button.", flush=True)
                 return
@@ -357,6 +377,8 @@ class GeminiLiveProvider:
                     elif activity_type == 'ACTIVITY_END':
                         state['speaking_since'] = None
                         state['last_user_speech'] = time.time()
+                        if state['thinking_at']:
+                            state['thinking_at'] = time.time() + self.thinking_delay  # count from the end of speech
 
                     server_content = getattr(response, 'server_content', None)
                     if server_content is not None:
@@ -371,6 +393,7 @@ class GeminiLiveProvider:
                             self._flush_turn(state)
                             state['last_activity'] = time.time()
                             state['is_thinking'] = False
+                            state['thinking_at'] = None
                             hardware.set_color("orange", blink=False)
                             audio_manager.stop_playback()
 
@@ -384,8 +407,9 @@ class GeminiLiveProvider:
                                     if getattr(part, 'text', None):
                                         print(f"\n[Gemini Thought] {part.text}", flush=True)
                                 elif hasattr(part, 'inline_data') and part.inline_data:
+                                    state['thinking_at'] = None
                                     if state.get('is_thinking', False):
-                                        audio_manager.stop_playback()
+                                        audio_manager.fade_out()  # the answer follows the short fade
                                         state['is_thinking'] = False
                                     audio_manager.play_chunk(part.inline_data.data)
                                     state['turn_speech'] = True
@@ -408,9 +432,15 @@ class GeminiLiveProvider:
                                 self._flush_turn(state)  # new user speech after an answer: previous exchange is done
                             state['user_parts'].append(input_transcription.text)
                             print(f"\n[User Voice Transcript] {input_transcription.text}", flush=True)
-                            state['is_thinking'] = True
-                            if sfx:
-                                sfx.play_thinking()
+                            if not state.get('is_thinking') and not state.get('tool_running'):
+                                state['thinking_at'] = time.time() + self.thinking_delay  # see _start_thinking_if_due
+
+                        if turn_complete and not state.get('turn_speech') and not state.get('tool_running'):
+                            # Gemini chose to stay silent: no thinking sound
+                            state['thinking_at'] = None
+                            if state.get('is_thinking'):
+                                audio_manager.fade_out()
+                                state['is_thinking'] = False
 
                         if interrupted or turn_complete:
                             state['turn_speech'] = False
@@ -425,21 +455,25 @@ class GeminiLiveProvider:
                     tool_call = getattr(response, 'tool_call', None)
                     if tool_call is not None:
                         state['last_activity'] = time.time()
-                        # end_conversation alone stays silent: no thinking loop, no success sound, and the
-                        # thinking loop started by the user's last words stops (no speech has played since)
+                        # end_conversation alone stays silent: no thinking loop, no success sound, and a thinking
+                        # loop already started after the user's last words fades out (no speech has played since)
                         ending = all(fc.name == 'end_conversation' for fc in tool_call.function_calls)
-                        if ending and state.get('is_thinking', False):
-                            audio_manager.stop_playback()
+                        already_thinking = state.get('is_thinking', False)
+                        state['thinking_at'] = None
+                        if ending and already_thinking:
+                            audio_manager.fade_out()
                         state['is_thinking'] = False
                         state['tool_running'] = True
                         print(f"[Debug] Received tool_call: {tool_call}")
                         hardware.set_color("blue", blink=True) # Pulsing blue = thinking/executing
                         if sfx and not ending:
-                            # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ...").
+                            # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ..."),
+                            # and continue a thinking sound that is already playing instead of restarting it.
                             # OpenClaw often needs longer than the default loop, so keep the sound up to its timeout.
                             delegating = any(fc.name == 'ask_openclaw' for fc in tool_call.function_calls)
-                            sfx.play_thinking(after_speech=state.get('turn_speech', False),
-                                              seconds=openclaw.TIMEOUT if delegating else None)
+                            sfx.play_thinking(after_speech=state.get('turn_speech', False) or already_thinking,
+                                              seconds=openclaw.TIMEOUT if delegating else None,
+                                              fade_in=not already_thinking)
                         state['turn_speech'] = False
 
                         function_responses = []

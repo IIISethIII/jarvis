@@ -30,6 +30,7 @@ Important behaviour:
 - **API keys:** `GEMINI_KEYS` is a comma-separated pool. The key rotates after each session and on 429/quota errors.
 - **SFX** are raw PCM (24 kHz, mono, s16le) in `assets/sounds/` and go through the same output stream as speech. Convert new sounds with ffmpeg (see `convert_sounds.py`).
   - `AudioManager.play_chunk` queues audio in 0.1 s pieces because the blocking stream write can't be interrupted. `stop_playback()` therefore cuts within 0.1 s. Don't write long buffers to the stream another way: a whole 3.8 s thinking loop used to delay every answer until it ended, with the mic open in that gap.
+  - The thinking sound before an answer starts only after `JARVIS_THINKING_DELAY` (0.8 s) of user silence without an answer (`thinking_at`, started by `_start_thinking_if_due` in `_inactivity_loop`), with a fade-in, so quick answers come without it. Answer audio stops it with `fade_out()` (0.15 s) instead of a hard cut; a tool call continues it instead of restarting it.
 
 ## Prompt, workspace and learner
 
