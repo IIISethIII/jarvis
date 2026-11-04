@@ -28,7 +28,19 @@ def call_ha_service(domain: str, service: str, entity_id: str, extra_json: str =
             except json.JSONDecodeError:
                 pass # Fallback if parsing fails
         result = ha_client.call_service(domain, service, payload)
-        return "Success" if result is not None else "Failed to contact Home Assistant"
+        if result is not None:
+            return "Success"
+        if ha_client.last_status is None:
+            return "Failed to contact Home Assistant"
+        if ha_client.last_status == 400:
+            # Services that return data (weather.get_forecasts, todo.get_items, ...) are rejected without ?return_response
+            response = ha_client.call_service_response(domain, service, payload)
+            if response is not None:
+                from core import ha_context
+                text = json.dumps(ha_context._strip_ids(response), ensure_ascii=False, separators=(",", ":"))
+                return text[:ha_context.DETAILS_CHARS]
+        return (f"Failed: Home Assistant rejected {domain}.{service} (HTTP {ha_client.last_status}). "
+                f"Check entity_id and parameters with get_ha_details(service_domain='{domain}').")
     except Exception as e:
         return f"Error: {e}"
 

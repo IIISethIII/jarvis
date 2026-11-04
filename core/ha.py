@@ -43,10 +43,13 @@ class HomeAssistant:
             return None
 
     def call_service(self, domain, service, service_data=None):
-        """Calls a Home Assistant service (e.g. light/turn_on)."""
+        """Calls a Home Assistant service (e.g. light/turn_on). On failure returns None and sets last_status
+        (HTTP status, None if HA was unreachable)."""
+        self.last_status = None
         try:
             payload = service_data or {}
             r = self.session.post(f"{self.ha_url}/api/services/{domain}/{service}", json=payload, timeout=5)
+            self.last_status = r.status_code
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as e:
