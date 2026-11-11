@@ -1,0 +1,16 @@
+{
+  "name": "Weather comes from get_weather: other places, rain phases, asking for the user's home",
+  "sessions": [
+    {"turns": ["What's the weather going to be like in Hamburg tomorrow?"],
+     "expect": {"tools": ["get_weather"], "no_tools": ["ask_openclaw", "searxng_search", "get_ha_details"],
+                "tool_args": [{"tool": "get_weather", "match": "Hamburg"}]},
+     "no_learn": true},
+    {"turns": ["When will it stop raining in Munich today?"],
+     "expect": {"tools": ["get_weather"], "no_tools": ["ask_openclaw", "searxng_search", "get_ha_details"],
+                "tool_args": [{"tool": "get_weather", "match": "Munich|München"}]},
+     "no_learn": true},
+    {"turns": ["How's the weather at my place?", "I live in Cologne."],
+     "expect": {"tools": ["get_weather", "remember"], "tool_args": [{"tool": "get_weather", "match": "Cologne|Köln"}]},
+     "after": {"ANY": {"match": ["Cologne|Köln"]}}}
+  ]
+}

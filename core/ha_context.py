@@ -3,8 +3,9 @@
 The overview has one line per entity with its state and only short attributes. A trailing '+' marks
 entities with more attributes (forecasts, menus, lists); the tool get_ha_details returns them.
 If the overview exceeds JARVIS_HA_CONTEXT_CHARS it drops attributes first, then the read-only entities,
-which stay reachable through a search.
+which stay reachable through a search. JARVIS_HA_EXCLUDE hides entities from the overview and the search.
 """
+import fnmatch
 import json
 import os
 
@@ -91,8 +92,14 @@ def _areas():
         return {}
 
 
+def _excluded(entity_id):
+    """JARVIS_HA_EXCLUDE: comma-separated fnmatch patterns (e.g. 'weather.*,sensor.dwd_*')."""
+    patterns = [p.strip() for p in os.getenv("JARVIS_HA_EXCLUDE", "").split(",") if p.strip()]
+    return any(fnmatch.fnmatch(entity_id, p) for p in patterns)
+
+
 def _visible(states):
-    return [s for s in states if s["entity_id"].split(".")[0] not in SKIP_DOMAINS]
+    return [s for s in states if s["entity_id"].split(".")[0] not in SKIP_DOMAINS and not _excluded(s["entity_id"])]
 
 
 def _render(states, areas, with_attrs):
@@ -180,7 +187,8 @@ def details(entity_ids=None, query="", service_domain=""):
                    + json.dumps(attrs, ensure_ascii=False, separators=(",", ":")))
     if query:
         q = query.lower()
-        hits = [s for s in ha.fetch_all_states() if q in s["entity_id"].lower() or q in _name(s).lower()]
+        hits = [s for s in ha.fetch_all_states() if not _excluded(s["entity_id"])
+                and (q in s["entity_id"].lower() or q in _name(s).lower())]
         lines = [_line(s) for s in hits[:MAX_MATCHES]]
         if len(hits) > MAX_MATCHES:
             lines.append(f"... {len(hits) - MAX_MATCHES} more, search more precisely")

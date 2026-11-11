@@ -3,6 +3,7 @@ from google.genai import types
 from core.ha import HomeAssistant
 from core import memory
 from core import openclaw
+from core import weather
 from core import workspace
 
 # Initialize a global instance of the HA wrapper
@@ -63,6 +64,9 @@ def search_archive(query: str):
 
 def ask_openclaw(task: str):
     return openclaw.ask(task)
+
+def get_weather(location: str):
+    return weather.get_weather(location)
 
 def manage_timer(action: str, seconds: int = 0, time: str = "", date: str = "", label: str = "", timer_id: str = ""):
     """Sets, lists or cancels timers and alarms (see core/timers.py)."""
@@ -240,6 +244,20 @@ FUNCTION_DECLARATIONS = [
         ),
     ),
     types.FunctionDeclaration(
+        name="get_weather",
+        description="Weather for any place worldwide: now, rain radar for the next 2 hours (Germany), rain and dry phases and the hourly forecast for 24 hours, 7 days, yesterday, official warnings (Germany), air quality and pollen.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "location": types.Schema(
+                    type=types.Type.STRING,
+                    description="Town, address or 'lat,lon'. For the user's own place: their home address or town as you know it from USER/MEMORY.",
+                ),
+            },
+            required=["location"],
+        ),
+    ),
+    types.FunctionDeclaration(
         name="end_conversation",
         description="Ends the conversation after a short pause. Only for a clear, complete goodbye ('Thanks', 'Bye', 'Stop', 'That's it'). Not for sentence fragments, questions, insults or swearing. When in doubt, don't call it: the session also ends after silence.",
     ),
@@ -276,6 +294,7 @@ TOOL_IMPLEMENTATIONS = {
     'search_archive': search_archive,
     'manage_timer': manage_timer,
     'ask_openclaw': ask_openclaw,
+    'get_weather': get_weather,
     'end_conversation': end_conversation,
 }
 

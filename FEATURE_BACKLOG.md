@@ -18,7 +18,8 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - Wake-Word „Hey Jarvis" (openWakeWord), Mikrofon-Watchdog (Timeout, Rapid-Fire, Stille, Queue-Stau)
 - Gemini Live Voice-to-Voice, Rotation mehrerer API-Keys mit Fallback bei 429/Quota, Session endet nach Stille (Timer ab Ende der Sprachausgabe, unbeantwortete Sprache zählt nur begrenzt)
 - LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
-- Smart Home: generisches `call_ha_service`, kompakte Geräte- und Service-Übersicht im Prompt (`core/ha_context.py`, Budget `JARVIS_HA_CONTEXT_CHARS`), Details, Suche, Service-Parameter, Einkaufslisten, Wettervorhersagen und Kalender auf Nachfrage per `get_ha_details`
+- Smart Home: generisches `call_ha_service`, kompakte Geräte- und Service-Übersicht im Prompt (`core/ha_context.py`, Budget `JARVIS_HA_CONTEXT_CHARS`), Details, Suche, Service-Parameter, Einkaufslisten und Kalender auf Nachfrage per `get_ha_details`, Entities ausblendbar per `JARVIS_HA_EXCLUDE`
+- Wetter ohne HA und ohne API-Key per `get_weather` (`core/weather.py`): Open-Meteo weltweit, in Deutschland zusätzlich DWD-Regenradar und -Warnungen über Bright Sky, Luftqualität und Pollen, beliebige Orte und Adressen (Nominatim, Cache in `data/geocode.json`)
 - `set_speaker_volume`, `get_pi_temperature`, `end_conversation`
 - Core Memory (`data/core_memory.md`, append/replace), `search_archive` (Stichwortsuche)
 - MCP: `mcp.local` (SearXNG-Websuche, Firecrawl, Context7, Gmail, Google Calendar, Google Tasks, Mail, Fitbit/Google Health), `memory.local` (Basic Memory), HiFiBerry (Player, Queue, Library)

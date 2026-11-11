@@ -14,7 +14,8 @@ Open work: [FEATURE_BACKLOG.md](FEATURE_BACKLOG.md).
 main.py              boot, mic watchdog, wake word loop (--test: inject text via trigger.tmp)
 core/
   llm.py             GeminiLiveProvider: Live session, system prompt with HA context, tool calls, key rotation
-  tools.py           local tools (call_ha_service, set_speaker_volume, core memory, archive search, ...)
+  tools.py           local tools (call_ha_service, set_speaker_volume, get_weather, core memory, archive search, ...)
+  weather.py         weather for any place: Open-Meteo, in Germany DWD radar and warnings (Bright Sky), no API key
   mcp.py             MCP client; servers in mcp_config.json
   audio.py           mic process, playback, ALSA mixer setup
   wake.py            openWakeWord detector

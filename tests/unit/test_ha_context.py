@@ -29,6 +29,13 @@ class OverviewTest(unittest.TestCase):
         self.assertIn("(todo.shopping): 3 +items", text)          # items via a service response
         self.assertNotIn("automation.x", text)
 
+    def test_exclude(self):
+        with mock.patch.dict(os.environ, {"JARVIS_HA_EXCLUDE": "sensor.r*, todo.*"}):
+            text = ha_context.devices_overview(STATES, areas={})
+        self.assertNotIn("sensor.rain", text)
+        self.assertNotIn("todo.shopping", text)
+        self.assertIn("sensor.temp", text)
+
     def test_areas(self):
         text = ha_context.devices_overview(STATES, areas={"light.desk": "Office"})
         self.assertTrue(text.startswith("Office:\n- Desk"))

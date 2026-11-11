@@ -31,7 +31,7 @@ SECRET = {"GEMINI_KEYS", "HA_TOKEN", "OPENCLAW_TOKEN"}
 # answers that go to the learner for SOUL and USER
 QUESTIONS = [
     ("user_name", "What should the assistant call you?"),
-    ("home", "Where do you live (city, for weather and local knowledge)?"),
+    ("home", "Where do you live (town or address, for weather and local knowledge)?"),
     ("personality", "What personality should the assistant have (e.g. friendly and calm, cheeky and witty)?"),
     ("preferences", "Anything it should always or never do, or know about you (optional)?"),
 ]
