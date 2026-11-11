@@ -1,6 +1,21 @@
 import math
 import os
 
+import numpy as np
+
+# SFX are scaled so their loudest sample reaches this fraction of full scale. Speech is not touched.
+SFX_PEAK = float(os.getenv("JARVIS_SFX_PEAK", "0.7"))
+
+
+def normalize_peak(pcm, peak):
+    """Scales 24 kHz int16 PCM so its loudest sample is `peak` (0-1) of full scale."""
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+    loudest = np.abs(samples).max() if len(samples) else 0
+    if loudest == 0:
+        return pcm
+    return np.clip(samples * (peak * 32767 / loudest), -32768, 32767).astype(np.int16).tobytes()
+
+
 class SFXManager:
     def __init__(self, audio_manager, assets_dir="assets/sounds"):
         self.audio_manager = audio_manager
@@ -12,7 +27,7 @@ class SFXManager:
             path = os.path.join(base_path, sound_name)
             if os.path.exists(path):
                 with open(path, "rb") as f:
-                    self.sounds[sound_name.split(".")[0]] = f.read()
+                    self.sounds[sound_name.split(".")[0]] = normalize_peak(f.read(), SFX_PEAK)
             else:
                 print(f"[SFX] Warning: Sound {sound_name} not found.")
 
