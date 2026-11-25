@@ -19,6 +19,7 @@ PRE_ANSWER_THINKING_S = 10  # thinking sound while waiting for Gemini's first an
 
 def live_config(system_prompt, function_declarations):
     """Live session config: audio out with transcripts both ways. Shared with tests/conversations/run.py."""
+    voice = os.getenv("JARVIS_VOICE", "Zubenelgenubi")
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         input_audio_transcription=types.AudioTranscriptionConfig(),
@@ -28,7 +29,7 @@ def live_config(system_prompt, function_declarations):
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name="Zubenelgenubi"
+                    voice_name=voice
                 )
             )
         )
@@ -46,11 +47,16 @@ class GeminiLiveProvider:
             
         self.current_key_index = 0
         self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
-        self.model_name = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         self.session = None
         # Set from other threads (hardware button) to end the running session
         self.cancel_event = threading.Event()
         self.is_active = False
+        self.load_session_settings()
+        self.local_vad = LocalVAD()
+
+    def load_session_settings(self):
+        """Settings read at the start of every conversation (main.py re-reads .env for them before)."""
+        self.model_name = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
         # Session end: seconds of silence after Jarvis spoke, see _close_reason
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
@@ -58,7 +64,7 @@ class GeminiLiveProvider:
         self.end_grace = float(os.getenv("JARVIS_END_GRACE", "2"))
         self.thinking_delay = float(os.getenv("JARVIS_THINKING_DELAY", "0.8"))
         self.answer_wait = float(os.getenv("JARVIS_ANSWER_WAIT", "8"))
-        self.local_vad = LocalVAD()
+        self.mic_gain = float(os.getenv("JARVIS_MIC_GAIN", "4"))
 
     def request_cancel(self):
         """Ends the running session (thread-safe). Does nothing when idle."""
@@ -77,6 +83,10 @@ class GeminiLiveProvider:
         """Connects to the Live API and handles bidirectional audio streaming."""
         self.cancel_event.clear()
         self.is_active = True
+        try:
+            self.load_session_settings()
+        except ValueError as e:
+            print(f"[LLM] Invalid setting in .env, keeping the previous values: {e}", flush=True)
         self.local_vad.start_session()
         try:
             await self._connect(audio_manager, hardware, dynamic_tools, mock_text, sfx)
@@ -351,8 +361,8 @@ class GeminiLiveProvider:
                     
                     audio_array = np.frombuffer(pcm_data, dtype=np.int16)
                     
-                    # Apply digital gain (4x) to help Gemini hear far-field speech (3m away)
-                    boosted_array = np.clip(audio_array.astype(np.float32) * 4.0, -32768, 32767).astype(np.int16)
+                    # Digital gain (JARVIS_MIC_GAIN, default 4x) helps Gemini hear far-field speech (3 m away)
+                    boosted_array = np.clip(audio_array.astype(np.float32) * self.mic_gain, -32768, 32767).astype(np.int16)
                     pcm_data = boosted_array.tobytes()
                     self.local_vad.feed(pcm_data)  # same signal Gemini gets
 

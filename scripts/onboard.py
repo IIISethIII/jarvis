@@ -13,7 +13,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-ENV_FILE = os.path.join(ROOT, ".env")
+from core import envfile, workspace  # noqa: E402
+
+ENV_FILE = envfile.DEFAULT_PATH
 
 # (.env key, question, default)
 SETTINGS = [
@@ -28,38 +30,17 @@ SETTINGS = [
 ]
 SECRET = {"GEMINI_KEYS", "HA_TOKEN", "OPENCLAW_TOKEN"}
 
-# answers that go to the learner for SOUL and USER
-QUESTIONS = [
-    ("user_name", "What should the assistant call you?"),
-    ("home", "Where do you live (town or address, for weather and local knowledge)?"),
-    ("personality", "What personality should the assistant have (e.g. friendly and calm, cheeky and witty)?"),
-    ("preferences", "Anything it should always or never do, or know about you (optional)?"),
-]
+# answers that go to the learner for SOUL and USER (shared with the web UI's setup)
+QUESTIONS = workspace.ONBOARDING_QUESTIONS
 
 
 def read_env():
-    values = {}
-    if os.path.exists(ENV_FILE):
-        for line in open(ENV_FILE, encoding="utf-8"):
-            if "=" in line and not line.lstrip().startswith("#"):
-                k, v = line.split("=", 1)
-                values[k.strip()] = v.strip()
-    return values
+    return envfile.read(ENV_FILE)
 
 
 def write_env(updates):
-    """Updates or appends keys and keeps every other line (comments included) as it is."""
-    lines = open(ENV_FILE, encoding="utf-8").read().splitlines() if os.path.exists(ENV_FILE) else []
-    done = set()
-    for i, line in enumerate(lines):
-        key = line.split("=", 1)[0].strip()
-        if "=" in line and not line.lstrip().startswith("#") and key in updates:
-            lines[i] = f"{key}={updates[key]}"
-            done.add(key)
-    lines += [f"{k}={v}" for k, v in updates.items() if k not in done]
-    with open(ENV_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-    os.chmod(ENV_FILE, 0o600)
+    """Updates or adds keys and keeps every other line (comments included) as it is."""
+    envfile.update(updates, ENV_FILE)
 
 
 def ask(question, default=""):
@@ -99,9 +80,9 @@ def main():
     for key, question in QUESTIONS:
         answers[key] = given.get(key, "") if given is not None else ask(question)
 
-    from core import learner, workspace
+    from core import learner
     workspace.ensure()
-    text = "\n".join(f"{q} -> {answers[k]}" for k, q in QUESTIONS if answers[k])
+    text = workspace.onboarding_text(answers)
     if text:
         learner.run("onboarding", text, source="onboarding")
 

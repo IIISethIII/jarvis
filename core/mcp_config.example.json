@@ -1,0 +1,6 @@
+{
+  "servers": {
+    "example-gateway": {"url": "http://mcp-host:8000/sse", "type": "sse", "exclude": ["*_delete_*"]},
+    "basic-memory": {"url": "http://memory-host:8000/sse", "type": "sse", "include": ["bm_search", "bm_read"]}
+  }
+}

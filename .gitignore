@@ -12,6 +12,9 @@ venv/
 # Personal data (core memory, conversation archive)
 data/
 
+# Personal MCP servers (template: core/mcp_config.example.json)
+core/mcp_config.json
+
 # Old personal prompt file (now data/workspace/SOUL.md)
 prompts/persona.md
 

@@ -5,7 +5,8 @@ in after the session. Runs:
   - notes:      right after a session in which Jarvis called 'remember'
   - session:    JARVIS_LEARNER_DELAY_MIN after the last session, over all sessions not reviewed yet
   - reflection: once a night (JARVIS_REFLECT_HOUR): where was Jarvis unhelpful, what should change?
-  - import / onboarding: scripts/import_facts.py and scripts/onboard.py
+  - import / onboarding: scripts/import_facts.py and scripts/onboard.py; the web UI's setup queues its
+                answers in the workspace (.onboarding.json) and the scheduler below runs them
 
 One run is one structured request: the model gets the current files and returns single changes (add / replace /
 remove an entry), which workspace.Run validates and applies. Failed changes get one correction round.
@@ -19,7 +20,7 @@ from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
-from core import memory, prompt, workspace
+from core import memory, prompt, status, workspace
 
 load_dotenv()
 
@@ -186,6 +187,12 @@ def run(mode, input_text, source=None, models=None):
     result, model = _generate(system, request, models)
     changes = (result.get("changes") or [])[:MAX_CHANGES[mode]]
     workspace._write(workspace._path(".learner-last.json"), json.dumps({"model": model, "result": result}, ensure_ascii=False, indent=1))
+    # from reading the files into the run until writing them: an edit in the web UI meanwhile would be lost
+    with workspace.lock():
+        return _apply_run(mode, source, system, request, result, changes, model, models)
+
+
+def _apply_run(mode, source, system, request, result, changes, model, models):
     ws_run = workspace.Run(f"{source or mode}, {model}")
     if mode == "session":
         # personality and house rules change only on request (notes), in the reflection or by import
@@ -324,6 +331,7 @@ class Scheduler:
 
     def __init__(self):
         self._due = None
+        self._onboarding_retry_at = 0.0
         self._last_reflect_try = 0.0
         self._wake = threading.Event()
         self._is_busy = lambda: False
@@ -340,6 +348,8 @@ class Scheduler:
             self._due = time.time() + DELAY_MIN * 60
         threading.Thread(target=self._loop, name="learner", daemon=True).start()
         print(f"[Learner] On ({', '.join(MODELS)}).", flush=True)
+        if workspace.pending_onboarding():
+            self._wake.set()
 
     def session_ended(self):
         """Called after every Live session."""
@@ -351,22 +361,57 @@ class Scheduler:
         while True:
             self._wake.wait(30)
             self._wake.clear()
-            if self._is_busy():
-                continue
-            now = time.time()
-            if self._due and now >= self._due:
-                self._due = None
+            try:
+                self._tick()
+            except Exception as e:  # never let one failed run end the thread
+                print(f"[Learner] Error: {e!r}", flush=True)
+
+    def _onboarding(self):
+        """Setup answers from the web UI (workspace.queue_onboarding)."""
+        job = workspace.pending_onboarding()
+        if not job or time.time() < self._onboarding_retry_at:
+            return
+        text = workspace.onboarding_text(job.get("answers") or {})
+        if not text:
+            workspace.clear_onboarding()
+            return
+        status.update(learner="onboarding")
+        try:
+            run("onboarding", text, source="onboarding (web UI)")
+            workspace.clear_onboarding()
+        except RuntimeError as e:
+            print(f"[Learner] Onboarding failed, retry in {RETRY_MIN} min: {e}", flush=True)
+            self._onboarding_retry_at = time.time() + RETRY_MIN * 60
+        finally:
+            status.update(learner=None)
+
+    def _tick(self):
+        if self._is_busy():
+            return
+        self._onboarding()
+        now = time.time()
+        if self._due and now >= self._due:
+            self._due = None
+            status.update(learner="review")
+            try:
                 if not review_pending():
                     self._due = time.time() + RETRY_MIN * 60
-            if REFLECT_HOUR >= 0 and datetime.now().hour == REFLECT_HOUR and now - self._last_reflect_try > 20 * 60:
-                self._last_reflect_try = now
-                state = _load_state()
-                today = datetime.now().strftime("%Y-%m-%d")
-                if state.get("last_reflection") != today:
-                    if reflect():
-                        state = _load_state()
-                        state["last_reflection"] = today
-                        _save_state(state)
+            finally:
+                status.update(learner=None)
+        if REFLECT_HOUR >= 0 and datetime.now().hour == REFLECT_HOUR and now - self._last_reflect_try > 20 * 60:
+            self._last_reflect_try = now
+            state = _load_state()
+            today = datetime.now().strftime("%Y-%m-%d")
+            if state.get("last_reflection") != today:
+                status.update(learner="reflection")
+                try:
+                    reflected = reflect()
+                finally:
+                    status.update(learner=None)
+                if reflected:
+                    state = _load_state()
+                    state["last_reflection"] = today
+                    _save_state(state)
 
 
 scheduler = Scheduler()

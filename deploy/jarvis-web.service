@@ -1,0 +1,17 @@
+# Started by jarvis-web.socket; see there. Adjust User and paths to your install (same as jarvis.service).
+[Unit]
+Description=Jarvis web interface
+Requires=jarvis-web.socket
+After=jarvis-web.socket
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/jarvis_v3
+Environment=PYTHONUNBUFFERED=1
+# Only the standard library is needed, any python3 works
+ExecStart=/home/pi/jarvis_v3/venv/bin/python -m web.server
+TimeoutStopSec=5
+
+[Install]
+Also=jarvis-web.socket

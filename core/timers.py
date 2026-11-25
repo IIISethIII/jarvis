@@ -4,6 +4,8 @@ import os
 import threading
 import time
 
+from core import status
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TIMERS_FILE = os.path.join(ROOT, "data", "timers.json")
 ALARM_SOUND = os.path.join(ROOT, "assets", "sounds", "alarm.pcm")
@@ -196,6 +198,7 @@ class TimerManager:
             self._ringing_since = None
             labels, self._ringing_labels = self._ringing_labels, []
             self._sound = None  # ~1 MB, not worth keeping on the Pi between alarms
+        status.update(alarm=False)
         audio = self._get_audio() if self._get_audio else None
         if audio:
             audio.stop_playback()
@@ -217,6 +220,7 @@ class TimerManager:
             self._ringing_labels += [t["label"] for t in due]
             self._ringing_since = time.time()
             self._pos = 0
+        status.update(alarm=True)
         if self._on_ring:
             try:
                 self._on_ring()

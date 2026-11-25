@@ -10,7 +10,8 @@ THRESHOLD = float(os.getenv("JARVIS_WAKE_THRESHOLD", "0.5"))
 NEAR_MISS = 0.6 * THRESHOLD
 
 class WakeWordDetector:
-    def __init__(self, model_name="hey_jarvis"):
+    def __init__(self, model_name=None):
+        model_name = model_name or os.getenv("JARVIS_WAKE_MODEL", "hey_jarvis")
         self.last_trigger_time = 0
         self.near_miss_peak = 0.0
         # Get the absolute paths to all pre-trained models bundled in the library

@@ -7,15 +7,24 @@ Layout (data/workspace/, gitignored; JARVIS_WORKSPACE or JARVIS_DATA_DIR move it
   .history/<run>/                          copies of the files a run changed, taken before the change
   .inbox.jsonl                             notes Jarvis passed on with 'remember', not yet processed
   .usage.json                              when each skill was last loaded
+  .lock                                    held by every change (learner run, edit in the web UI, undo)
+  .onboarding.json                         answers from the web UI's setup, waiting for the learner in Jarvis
 
 Changes only ever touch single entries (add / replace / remove). There is deliberately no way to rewrite a
 whole file: repeated rewrites by a model slowly blur and shorten what was there. Untouched text stays byte-identical.
 """
+import contextlib
+import hashlib
 import json
 import os
 import re
 import shutil
 from datetime import datetime
+
+try:
+    import fcntl
+except ImportError:  # not on Windows; the lock is then a no-op
+    fcntl = None
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATES_DIR = os.path.join(BASE_DIR, "prompts", "templates")
@@ -31,6 +40,15 @@ SKILL_BUDGET = 2000
 MAX_SKILLS = 30
 HISTORY_RUNS = 50  # runs kept in .history/
 SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+# first setup (scripts/onboard.py and the web UI): the answers go to the learner, which writes SOUL and USER
+ONBOARDING_QUESTIONS = [
+    ("user_name", "What should the assistant call you?"),
+    ("home", "Where do you live (town or address, for weather and local knowledge)?"),
+    ("personality", "What personality should the assistant have (e.g. friendly and calm, cheeky and witty)?"),
+    ("preferences", "Anything it should always or never do, or know about you (optional)?"),
+]
+ONBOARDING_FILE = ".onboarding.json"
 
 
 def root():
@@ -53,6 +71,33 @@ def ensure():
                 shutil.copyfile(src, target)
             else:
                 _write(target, f"# {fname[:-3]}\n")
+
+
+class Busy(Exception):
+    """Another change (usually a learner run) holds the workspace lock."""
+
+
+class Conflict(Exception):
+    """The file changed since the editor loaded it."""
+
+
+@contextlib.contextmanager
+def lock(wait=True):
+    """Exclusive lock for changes. A learner run holds it from reading the files into memory until it writes them,
+    so an edit in the web UI meanwhile can't be overwritten; the web UI takes it with wait=False and reports Busy."""
+    os.makedirs(root(), exist_ok=True)
+    with open(_path(".lock"), "a") as f:
+        if fcntl is not None:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
+            except BlockingIOError:
+                raise Busy("the learner is updating the workspace right now")
+        yield  # closing the file releases the lock
+
+
+def text_hash(text):
+    """Short hash of a file's content, for conflict checks in editors."""
+    return hashlib.sha256((text or "").encode()).hexdigest()[:16]
 
 
 def _read(path):
@@ -418,6 +463,10 @@ class Run:
         files, skills = self.changed()
         if files or skills:
             snap = _path(".history", self.id)
+            n = 2
+            while os.path.exists(snap):  # two runs in the same second (e.g. quick edits in the web UI)
+                snap = _path(".history", f"{self.id}-{n}")
+                n += 1
             os.makedirs(os.path.join(snap, "skills"), exist_ok=True)
             manifest = {"source": self.source, "files": files, "skills": skills}
             for n in files:
@@ -479,6 +528,105 @@ def _prune_history():
     runs = sorted(d for d in os.listdir(folder) if not d.startswith("."))
     for old in runs[:-HISTORY_RUNS]:
         shutil.rmtree(os.path.join(folder, old), ignore_errors=True)
+
+
+def onboarding_text(answers):
+    """The answers as learner input: one 'question -> answer' line each."""
+    return "\n".join(f"{q} -> {str(answers[k]).strip()}" for k, q in ONBOARDING_QUESTIONS
+                     if str(answers.get(k) or "").strip())
+
+
+def queue_onboarding(answers):
+    """Stores setup answers for the learner thread in the Jarvis process (runs within ~30 s while Jarvis is up)."""
+    _write(_path(ONBOARDING_FILE), json.dumps({"time": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                                "answers": answers}, ensure_ascii=False))
+
+
+def pending_onboarding():
+    try:
+        data = json.loads(_read(_path(ONBOARDING_FILE)) or "null")
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def clear_onboarding():
+    try:
+        os.remove(_path(ONBOARDING_FILE))
+    except FileNotFoundError:
+        pass
+
+
+def edit_by_hand(source, files=None, skills=None, expected=None):
+    """Writes whole files or skills as given, with a snapshot and a CHANGES.md entry like a learner run, so undo works.
+
+    files: {name: text}; skills: {name: full skill text, or None to delete}; expected: {"SOUL" or "skill:<name>":
+    text_hash the editor started from, None for a skill that must not exist yet}. Raises Conflict when the current
+    content differs, ValueError for invalid input. Call it inside lock(). Returns the change descriptions.
+    """
+    files, skills, expected = files or {}, skills or {}, expected or {}
+    run = Run(source)
+    for name, text in files.items():
+        if name not in FILES:
+            raise ValueError(f"unknown file {name!r}")
+        if name in expected and text_hash(run.files[name]) != expected[name]:
+            raise Conflict(f"{FILES[name][0]} was changed meanwhile")
+        text = text if text.endswith("\n") or not text else text + "\n"
+        if text != run.files[name]:
+            run.log.append((f"{name} edited by hand ({len(run.files[name])} -> {len(text)} chars)", ""))
+            run.files[name] = text
+    for name, text in skills.items():
+        if not SKILL_NAME_RE.match(name or ""):
+            raise ValueError(f"invalid skill name {name!r} (lowercase letters, digits, dashes)")
+        current = run.skills.get(name)
+        key = f"skill:{name}"
+        if key in expected and (text_hash(current) if current is not None else None) != expected[key]:
+            raise Conflict(f"skill {name} was changed meanwhile" if current is not None or expected[key] is None
+                           else f"skill {name} was deleted meanwhile")
+        if text is None:
+            if current is not None:
+                run.skills[name] = None
+                run.log.append((f"skill {name} deleted by hand", ""))
+            continue
+        if not _parse_skill(text)[1].strip():
+            raise ValueError(f"skill {name} needs steps")
+        if current is None and len([t for t in run.skills.values() if t is not None]) >= MAX_SKILLS:
+            raise ValueError(f"already {MAX_SKILLS} skills, delete one first")
+        if text != current:
+            run.log.append((f"skill {name} {'created' if current is None else 'edited'} by hand", ""))
+            run.skills[name] = text
+    return run.commit()
+
+
+def skill_text(name, description, body, always=False):
+    """Full text of a skill file (frontmatter plus steps)."""
+    return _skill_text(name, description, body, always)
+
+
+def history(max_items=30):
+    """Newest CHANGES.md entries first: [{time, source, lines}]."""
+    items = []
+    for block in _read(_path("CHANGES.md")).split("\n## ")[1:]:
+        head, _, body = block.partition("\n")
+        m = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \((.*)\)\s*$", head.strip())
+        if not m:
+            continue
+        lines = [l[2:] for l in body.splitlines() if l.startswith("- ")]
+        items.append({"time": m.group(1), "source": m.group(2), "lines": lines})
+    return items[::-1][:max_items]
+
+
+def undo_available():
+    """{id, source} of the run undo_last() would revert, or None."""
+    folder = _path(".history")
+    runs = sorted(d for d in os.listdir(folder) if not d.startswith(".")) if os.path.isdir(folder) else []
+    if not runs:
+        return None
+    try:
+        manifest = json.loads(_read(os.path.join(folder, runs[-1], "manifest.json")))
+    except ValueError:
+        manifest = {}
+    return {"id": runs[-1], "source": manifest.get("source", "")}
 
 
 def undo_last():

@@ -168,12 +168,12 @@ Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts
 - [x] **`requirements.txt` aufräumen.** Die Zeile `/home/pi/aiyprojects-raspbian` ist ein lokaler Pfad und wird in v3 gar nicht genutzt (kein `aiy`-Import mehr) → entfernt, ebenso die ungenutzten `pygame`, `beautifulsoup4`, `mem0ai` und `chromadb`. `smbus2` ist als optional markiert. (Die Migrationsskripte unter `scripts/migration/` brauchen bei Bedarf zusätzlich `chromadb`.)
 - [ ] **Persönlichen Prompt aus `core/llm.py` herauslösen.** Folgendes steht dort fest im Code: „Paul", die Yamaha-Sleep-Button-Regel, „Library Radio" und Plexamp/HiFiBerry. Das kommt nach `prompts/persona.md` (gitignored) mit committeter `prompts/persona.example.md`. Die allgemeinen Regeln bleiben im Code.
   - Teilweise erledigt 2026-11-03: Der Abschnitt „Persönlichkeit“ (samt Münchner Lokalkolorit) kommt aus `prompts/persona.md`, ohne die Datei aus `prompts/persona.example.md`. Er wird pro Session gelesen.
-- [ ] **Werte konfigurierbar machen**, per Env oder Config-Datei:
-  - Voice (`Zubenelgenubi`)
-  - Mic-Gain (`* 4.0` in `_send_audio_loop`)
-  - Wake-Word-Modell (`hey_jarvis`). Die Schwelle ist seit 2026-11-02 `JARVIS_WAKE_THRESHOLD`.
-  - Mailbox-Entity (`input_text.jarvis_chat` in `core/ha.py`)
-- [ ] **MCP-Config:** `core/mcp_config.json` enthält private Hosts → `mcp_config.example.json` committen und die echte Datei gitignoren. Dabei gleich eine Allow-/Denylist pro Server einbauen.
+- [x] **Werte konfigurierbar machen**, per Env oder Config-Datei (2026-11-25, alle im Settings-Schema `core/settings_schema.py`):
+  - Voice: `JARVIS_VOICE`
+  - Mic-Gain: `JARVIS_MIC_GAIN`
+  - Wake-Word-Modell: `JARVIS_WAKE_MODEL`. Die Schwelle ist seit 2026-11-02 `JARVIS_WAKE_THRESHOLD`.
+  - Mailbox-Entity (`input_text.jarvis_chat` in `core/ha.py`): wird in v3 nirgends benutzt, bleibt bis zur Portierung der Mailbox so.
+- [x] **MCP-Config:** `core/mcp_config.example.json` committet, `core/mcp_config.json` gitignored (2026-11-25). Ohne Datei ist MCP aus. Allow-/Denylist pro Server gibt es seit 2026-10-30/11-04.
 - [ ] **Hardware-Abstraktion:** `BonnetHardware` setzt das Voice Bonnet V2 voraus (I2C-LED-Treiber auf 0x31, Button an GPIO 23). Das hinter ein kleines Interface legen, mit `NullHardware`, wenn nichts gefunden wird. Den Mock-Fallback ohne `smbus2` gibt es schon.
 - [ ] **Audio-Geräte konfigurierbar machen:**
   - `deploy/asound.conf` hat `hw:CameraB409241` (PS3 Eye) und `hw:aiyvoicebonnet` fest verdrahtet.
@@ -184,7 +184,18 @@ Ziel: Klonen, `.env` und Config ausfüllen, starten. Ohne Paul-spezifische Hosts
   - manuelle Testskripte nach `tests/manual/`
   - Einmal-Tools nach `scripts/` (Migration, `patch.py`, `bt.sh`, `pystack.sh`, Watchdog-Tests)
   - Planungsdokumente aus dem Rewrite nach `docs/` (`implementation_plan*.md`, `migration_guide.md`) oder löschen
-- [ ] **Deployment ins Repo:**
+- [x] **Deployment ins Repo:**
   - [x] `deploy/jarvis.service` (+ `deploy/asound.conf`)
-  - `deploy/install.sh` (venv anlegen, Pakete installieren, ALSA-Config einrichten, Service aktivieren)
+  - [x] `deploy/install.sh` (2026-11-25: Pakete, venv, Units für Jarvis und Weboberfläche, sudoers-Regel; ALSA-Config nur mit `--alsa`)
 - [ ] **Optionale Integrationen sauber deaktivierbar machen.** Ohne `HA_URL` keine HA-Tools und kein HA-Kontext im Prompt. Ohne MCP-Config keine MCP-Tools. Nichts davon darf den Start verhindern.
+
+## Weboberfläche (seit 2026-11-25, Branch `feat/web-ui`)
+
+Ziel: Andere können Jarvis ohne Terminal einrichten und bedienen. Läuft auf dem Pi per systemd-Socket-Activation (Port 80) und beendet sich nach 10 min ohne Anfragen: im Normalbetrieb 0 MB, beim Benutzen ~16 MB PSS (gemessen).
+
+- [x] **Phase 0 – Grundlagen:** Settings-Schema (`core/settings_schema.py`, Test gegen Code und `.env.example`), `.env`-Editor (`core/envfile.py`), Statusdatei (`core/status.py`), `mcp_config.example.json`. Nebenbei behoben: `main.py` hat `.env` erst nach `core.audio`/`core.wake` geladen, `JARVIS_MIC_HIGHPASS` und `JARVIS_WAKE_THRESHOLD` aus `.env` wirkten nie.
+- [x] **Phase 1 – MVP:** `web/server.py` (stdlib), Status, Log (Secrets maskiert), Einstellungen, Neustart (sofort oder sobald idle), Passwort beim ersten Besuch, Hinweis „Neustart nötig“ über einen Config-Fingerprint in der Statusdatei.
+- [x] **Phase 2:** Workspace-Editor (SOUL, AGENTS, USER, MEMORY, Skills, Verlauf, Undo, wartende Notizen), MCP-Server-Editor mit Verbindungstest, Verbindungstests für Gemini-Keys, HA und OpenClaw, Timer auf der Statusseite. Learner und Web-Editor teilen sich eine Dateisperre (`workspace.lock`), damit ein Learner-Lauf keine Web-Änderung überschreibt.
+- [x] **Phase 3:** Einrichtungsassistent beim ersten Start (Antworten laufen über den Learner im Jarvis-Prozess, nicht über einen zweiten Prozess), Jarvis wartet ohne Gemini-Key statt in einer Crash-Schleife zu laufen, `deploy/install.sh`, 18 Einstellungen gelten ab dem nächsten Gespräch ohne Neustart (Timing, Stimme, Name, Sprache, Modell, Mic-Gain, HA-Übersicht, Kontext). `.env.example` hat keine aktiven Platzhalter mehr.
+- [ ] Ideen für später: Oberfläche auf Deutsch (i18n), Text an Jarvis schicken statt sprechen (braucht einen Text-Eingang im laufenden Prozess), Lautstärke einstellen, HTTPS.
+

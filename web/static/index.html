@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jarvis</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="dot" id="state-dot"></span><span id="brand-name">Jarvis</span></div>
+  <nav id="nav" hidden>
+    <a href="#status" data-view="status">Status</a>
+    <a href="#settings" data-view="settings">Settings</a>
+    <a href="#workspace" data-view="workspace">Workspace</a>
+    <a href="#tools" data-view="tools">Tools</a>
+    <a href="#log" data-view="log">Log</a>
+  </nav>
+  <button id="logout" class="link" hidden>Log out</button>
+</header>
+<main id="main"><p class="muted">Loading…</p></main>
+<div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

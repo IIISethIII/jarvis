@@ -5,13 +5,61 @@ import os
 import math
 import random
 import struct
-from core.hardware import BonnetHardware
-from core.audio import AudioManager, init_audio_settings
-from core.wake import WakeWordDetector
-from core.mcp import mcp_client
-from core.learner import scheduler as learner
-from core.llm import GeminiLiveProvider
-from core.timers import timer_manager
+import sys
+
+from dotenv import load_dotenv
+
+# The real environment (systemd, shell) before .env: its variables win over .env, also when reloading
+BASE_ENV = dict(os.environ)
+# Load .env before any core module: several read their settings at import time (audio, wake word, VAD)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+from core import envfile, settings_schema, status
+
+GEMINI_KEY_NAMES = ("GEMINI_KEYS",) + settings_schema.BY_KEY["GEMINI_KEYS"].aliases
+
+
+def wait_for_setup():
+    """Without a Gemini key Jarvis can't do anything: wait cheaply (before the heavy imports) until the web
+    interface or an editor adds one, then start over in a fresh process."""
+    if any(os.getenv(k) for k in GEMINI_KEY_NAMES):
+        return
+    status.init(state="unconfigured", test_mode="--test" in sys.argv, config={},
+                error="No Gemini API key yet: set one on the web interface (http://<this device>/) or in .env.")
+    print("[Boot] No Gemini API key (GEMINI_KEYS in .env). Waiting for the setup: open the web interface "
+          "(http://<this device>/) or edit .env.", flush=True)
+    while True:
+        time.sleep(5)
+        values = envfile.read()
+        # as load_dotenv will see it: a variable of the real environment wins over .env
+        if any(BASE_ENV[k] if k in BASE_ENV else values.get(k) for k in GEMINI_KEY_NAMES):
+            print("[Boot] Gemini key found, starting.", flush=True)
+            if os.getenv("INVOCATION_ID"):
+                sys.exit(0)  # under systemd: Restart=always starts a fresh process with the new .env
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+def reload_session_settings():
+    """Re-reads the settings that apply per conversation (applies="session") from .env."""
+    keys = settings_schema.session_keys()
+    changed = envfile.reload(keys, BASE_ENV)
+    if changed:
+        print(f"[Config] New values for: {', '.join(changed)}", flush=True)
+        status.refresh_config(keys, settings_schema.fingerprint(envfile.read()))
+
+
+if __name__ == "__main__":
+    wait_for_setup()
+
+# Heavy imports (Gemini client, MCP, onnxruntime) only once a key is there
+from core.hardware import BonnetHardware  # noqa: E402
+from core.audio import AudioManager, init_audio_settings  # noqa: E402
+from core.wake import WakeWordDetector  # noqa: E402
+from core.mcp import mcp_client  # noqa: E402
+from core.learner import scheduler as learner  # noqa: E402
+from core.llm import GeminiLiveProvider  # noqa: E402
+from core.timers import timer_manager  # noqa: E402
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -21,6 +69,7 @@ def main():
     print("========================================")
     print(" JARVIS V3 - MAIN DAEMON")
     print("========================================")
+    status.init(test_mode=args.test, config=settings_schema.fingerprint(envfile.read()))
 
     hardware = BonnetHardware()
     hardware.set_color("purple", blink=True)
@@ -32,6 +81,7 @@ def main():
     mcp_client.start_sync()
     dynamic_tools = mcp_client.get_gemini_tools_sync()
     print(f"[Boot] Found {len(dynamic_tools)} dynamic tools.")
+    status.update(mcp={"servers": mcp_client.server_status(), "tools": len(dynamic_tools)})
 
     audio_manager = AudioManager()
     llm_provider = GeminiLiveProvider()
@@ -58,6 +108,7 @@ def main():
 
     if args.test:
         print("[Boot] Running in TEST mode. Waiting for mock trigger...")
+        status.update(state="idle")
         trigger_file = "trigger.tmp"
         
         if os.path.exists(trigger_file):
@@ -77,10 +128,14 @@ def main():
                     hardware.set_color("purple", blink=False)
                     
                     audio_manager.start_mic()
+                    reload_session_settings()
+                    status.update(state="session")
                     try:
                         asyncio.run(llm_provider.connect(audio_manager, hardware, dynamic_tools, mock_text=mock_text if mock_text != "trigger" else None))
                     except Exception as e:
                         print(f"Error in LLM loop: {e}")
+                        status.update(error=f"Session: {e}")
+                    status.update(state="idle")
                     learner.session_ended()
                     
                     audio_manager.stop()
@@ -110,6 +165,7 @@ def main():
         
         try:
             print("[Idle] Listening for 'Hey Jarvis'...")
+            status.update(state="idle")
             mic_fail_count = 0
             silence_count = 0
             
@@ -191,13 +247,17 @@ def main():
                     print("\n🚨 Wake Word Detected!", flush=True)
                     hardware.set_color("purple", blink=False)
                     sfx.play("wake")
+                    reload_session_settings()
+                    status.update(state="session")
                     
                     try:
                         # Passing sfx to llm_provider
                         asyncio.run(llm_provider.connect(audio_manager, hardware, dynamic_tools, sfx=sfx))
                     except Exception as e:
                         print(f"Error in LLM loop: {e}")
+                        status.update(error=f"Session: {e}")
                         sfx.play("error")
+                    status.update(state="idle")
                     learner.session_ended()
                     
                     sfx.play("sleep")

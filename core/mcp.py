@@ -10,6 +10,9 @@ import json
 import os
 from mcp.types import CallToolResult, ListToolsResult, Tool, TextContent
 
+from core import status
+from core.settings_schema import MCP_CONFIG_PATH as CONFIG_PATH
+
 # Suppress annoying SSE logs
 logging.getLogger("mcp.client.sse").setLevel(logging.CRITICAL)
 
@@ -75,12 +78,12 @@ class MCPManager:
         self._load_servers_from_config()
 
     def _load_servers_from_config(self):
-        """Load MCP server definitions from external JSON config file."""
-        import json
-        import os
-        config_path = os.path.join(os.path.dirname(__file__), "mcp_config.json")
+        """Load MCP server definitions from core/mcp_config.json (gitignored; see mcp_config.example.json)."""
+        if not os.path.exists(CONFIG_PATH):
+            print("[MCP] No core/mcp_config.json: MCP tools are off (template: core/mcp_config.example.json).", flush=True)
+            return
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 servers = data.get("servers") or data.get("mcpServers") or {}
                 # Ensure each server has a type; default to 'sse'
@@ -104,6 +107,7 @@ class MCPManager:
         if info["type"] == "stateless":
             self.sessions[name] = StatelessMCPSession(url)
             print(f"[MCP] ✅ {name} online (stateless).")
+            status.set_mcp_server(name, True)
             return
 
         while True:
@@ -114,17 +118,20 @@ class MCPManager:
                         await session.initialize()
                         self.sessions[name] = session
                         print(f"[MCP] ✅ {name} online.")
+                        status.set_mcp_server(name, True)
                         
                         # Block until connection drops
                         await asyncio.Event().wait()
                         
             except asyncio.CancelledError:
                 self.sessions.pop(name, None)
+                status.set_mcp_server(name, False)
                 break
             except Exception as e:
                 print(f"[MCP] ❌ Error in {name}: {repr(e)}. Reconnecting in 10s...")
                 
             self.sessions.pop(name, None)
+            status.set_mcp_server(name, False)
             await asyncio.sleep(10)
 
     async def _start_async(self):
@@ -140,6 +147,10 @@ class MCPManager:
             if len(self.sessions) == len(self.servers):
                 break
             await asyncio.sleep(0.5)
+
+    def server_status(self):
+        """{server name: online} for every configured server."""
+        return {name: name in self.sessions for name in self.servers}
 
     def start_sync(self):
         """Synchronous wrapper to initialize all servers."""

@@ -54,7 +54,8 @@ def main():
     from core import workspace
     workspace.ensure()
     if args.undo:
-        print(workspace.undo_last())
+        with workspace.lock():
+            print(workspace.undo_last())
         return
     if not args.files:
         parser.error("no files given")

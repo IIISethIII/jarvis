@@ -1,0 +1,4 @@
+# Lets the web interface restart Jarvis without a password, and nothing else.
+# Install (adjust the user if it is not 'pi'):
+#   sudo install -m 0440 deploy/jarvis-web.sudoers /etc/sudoers.d/jarvis-web && sudo visudo -c
+pi ALL=(root) NOPASSWD: /usr/bin/systemctl restart --no-block jarvis

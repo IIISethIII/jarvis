@@ -122,15 +122,34 @@ Restarting Jarvis is expensive. On the reference Pi it takes **~45 s** until `[I
 
 ## Configuration
 
-- `.env`: see `.env.example`.
+- `.env`: see `.env.example`. `main.py` loads it before importing `core`, because several modules read their settings at import time.
+  - Every setting is declared in `core/settings_schema.py` (type, default, range, help text, group). The web UI renders its form from it.
+  - A new env var goes into the schema **and** `.env.example`, with the same default as the `os.getenv(KEY, default)` call. `tests/unit/test_settings_schema.py` checks all three against each other.
+  - `core/envfile.py` edits `.env` (stdlib only): one key at a time, keeps comments and order, atomic, mode 0600. Use it instead of writing `.env` by hand in code.
+- **Per-conversation settings:** settings with `applies="session"` in the schema are re-read from `.env` before every wake word (`main.reload_session_settings` → `envfile.reload`; the real environment wins, as with load_dotenv). The code must read them inside a function that runs per conversation, never at import time or in `__init__`; `tests/unit/test_settings_schema.py` checks that. Everything else needs a restart, and the web UI says which.
+- **Without a Gemini key** `main.py` waits before the heavy imports (state `unconfigured`, ~no RAM) and starts over in a fresh process as soon as `.env` has one (exit 0 under systemd, execv otherwise).
+- `data/.status.json` (`core/status.py`): state of the running Jarvis (idle/session, alarm, learner run, MCP servers online, last error) for the web UI. Only the process that called `status.init()` (main.py) writes it; `update()` is a no-op elsewhere.
 - `data/workspace/`: personality, house rules, user, memory, skills (see above). First setup: `python -m scripts.onboard`. Import old notes: `python -m scripts.import_facts <file>`. Edit by hand only while Jarvis is idle (the Pi side writes, Mutagen syncs both ways). The content goes into the prompt verbatim.
-- `core/mcp_config.json`: MCP servers.
+- `core/mcp_config.json`: MCP servers (gitignored; template `core/mcp_config.example.json`). Without it MCP is off.
 - `deploy/asound.conf`: ALSA setup for the reference hardware (copy to `~/.asoundrc`).
-- `deploy/jarvis.service`: systemd unit.
+- `deploy/jarvis.service`: systemd unit. `deploy/jarvis-web.*`: web interface (socket, service, sudoers rule).
+
+## Web interface
+
+- `web/server.py` + `web/static/` (plain HTML/CSS/JS, no build step). Started by systemd socket activation (`deploy/jarvis-web.socket`, port 80) and exits after `JARVIS_WEB_IDLE_MIN` idle minutes, so it uses no RAM while nobody has the page open (~16 MB PSS while running).
+- **Standard library only**, and it may import only the stdlib-only core modules `envfile`, `settings_schema`, `status` and `workspace`. Never import `core.llm`, `core.mcp` & co. there: they pull in google-genai and the MCP client (tens of MB).
+- It learns Jarvis' state only from `data/.status.json`, reads the log with `journalctl -u jarvis` and restarts with `sudo -n systemctl restart --no-block jarvis` (`deploy/jarvis-web.sudoers`).
+- Pages: Status (incl. timers), Settings (with connection tests for Gemini, HA, OpenClaw), Workspace (edit SOUL/AGENTS/USER/MEMORY and skills, history, undo), Tools (MCP servers in `core/mcp_config.json`, with a connection test), Log.
+- The setup assistant saves settings, queues the "about you" answers in `data/workspace/.onboarding.json` and restarts Jarvis. The learner thread in Jarvis runs them as an onboarding run (no second process with google-genai on the Pi); on quota errors it retries after 30 min.
+- `deploy/install.sh` installs everything for the current user and path (dry run: `--dry-run`).
+- Hand edits go through `workspace.edit_by_hand()` inside `workspace.lock(wait=False)`: same snapshot + `CHANGES.md` entry as a learner run (so undo works), and a hash check against what the editor loaded. A learner run holds the same lock (`learner.run`, from creating the `workspace.Run` to its commit), so it can't overwrite an edit made meanwhile; the page then answers "busy".
+- Secrets never go to the browser (only "set" and the last 4 characters); log lines are masked. State-changing requests need the header `X-Jarvis: 1`. Until a password is set, only local host names are accepted.
+- Changes to `web/static/` show on the next page load. Changes to `web/server.py` need `sudo systemctl restart jarvis-web` (or wait for the idle exit). Neither needs a Jarvis restart.
+- Test locally: `python3 -m web.server --port 8080 --env-file /tmp/test.env`; unit tests: `tests/unit/test_web_server.py`.
 
 ## Layout
 
-- Runtime code: `main.py`, `core/`, `prompts/`, `assets/sounds/`.
+- Runtime code: `main.py`, `core/`, `prompts/`, `assets/sounds/`, `web/`.
 - Everything else is tooling:
   - `scripts/`, with `debug/` and the one-off `migration/` (v2 Mem0 → v3)
   - `tests/manual/`

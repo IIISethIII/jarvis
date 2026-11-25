@@ -1,0 +1,14 @@
+# Web interface of Jarvis (status, log, settings). systemd listens on the port and starts jarvis-web.service on
+# the first request; the server ends itself after JARVIS_WEB_IDLE_MIN idle minutes, so it needs no RAM while
+# nobody uses it. Port 80 works without root because systemd opens it.
+#   sudo cp deploy/jarvis-web.socket deploy/jarvis-web.service /etc/systemd/system/   # adjust user/paths in .service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now jarvis-web.socket
+# Then open http://<pi-address>/ and set a password.
+[Unit]
+Description=Jarvis web interface (socket)
+
+[Socket]
+ListenStream=80
+
+[Install]
+WantedBy=sockets.target
