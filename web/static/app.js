@@ -7,7 +7,9 @@ const S = {
   settings: null,
   changes: {},     // key -> new value, or null to remove (default applies again)
   errors: {},
-  fields: {},      // key -> {el, reset()} of the rendered settings form
+  fields: {},      // key -> {el, err, hint} of the rendered settings form
+  optionLoaders: [], // dropdowns loaded from the server: {deps, load}, reloaded when a dep changes (see setChange)
+  liveModels: null,  // live model -> supports thinking, from the GEMINI_LIVE_MODEL list
   restarting: null, // {at, started} while a restart we triggered is in progress
   setupTimer: null,
   wsDirty: new Set(), // workspace editors with unsaved text
@@ -411,6 +413,7 @@ async function loadSettings() {
 function renderSettings() {
   const view = $("#view");
   S.fields = {};
+  S.optionLoaders = [];
   const cards = S.settings.groups.map((g) => h("section", { class: "card", id: "group-" + g.id },
     h("h2", { text: g.title }),
     h("p", { class: "desc", text: g.description }),
@@ -434,7 +437,124 @@ function setChange(key, value) {
     f.el.classList.toggle("changed", key in S.changes);
     f.err.textContent = "";
   }
+  // a newly typed API key or URL: reload the lists that depend on it
+  for (const l of S.optionLoaders) {
+    if (!l.deps.includes(key)) continue;
+    clearTimeout(l.timer);
+    l.timer = setTimeout(l.load, 800);
+  }
+  if (key === "GEMINI_LIVE_MODEL") updateThinkingHint();
   updateSaveBar();
+}
+
+// --- dropdowns --------------------------------------------------------------------------------
+// Settings with offered values get a <select>: fixed choices, suggestions (voices, languages), or a list the
+// server loads for the setting's source (the models the Gemini key can use, installed wake word models).
+// "Other…" allows any value unless the schema has fixed choices.
+
+const OTHER = "\u0001other";
+
+function optionText(o) {
+  return o.value + (o.thinking ? " · thinking" : "") + (o.note ? ` · ${o.note}` : "");
+}
+
+function effective(item) {
+  // what the form shows now: a pending change, else the saved value ("" = not set)
+  return item.key in S.changes ? (S.changes[item.key] ?? "") : (item.value ?? "");
+}
+
+function loadOptions(item, done) {
+  const load = async () => {
+    const values = {};
+    for (const key of item.source_deps) if (typeof S.changes[key] === "string") values[key] = S.changes[key];
+    try {
+      const r = await api("POST", "/api/options", { source: item.source, values });
+      done(r.options, r.error);
+    } catch (e) {
+      if (e.status !== 401) done([], e.message);
+    }
+  };
+  S.optionLoaders.push({ deps: item.source_deps, load });
+  load();
+}
+
+function picker(item) {
+  const stored = item.value ?? "";
+  const fixed = item.choices.length > 0;
+  let options = (fixed ? item.choices : item.suggest).map((v) => ({ value: v }));
+  let loading = Boolean(item.source);
+  const note = h("div", { class: "help" });
+  const commit = (v) => setChange(item.key, v === stored ? undefined : (v === "" ? null : v));
+  const other = h("input", { type: "text", hidden: true, spellcheck: false, autocomplete: "off",
+    placeholder: "Any value", style: "margin-top:6px", oninput: () => commit(other.value.trim()) });
+  const sel = h("select", { onchange: () => {
+    if (sel.value === OTHER) {
+      other.hidden = false;
+      other.value = effective(item);
+      other.focus();
+      return;
+    }
+    other.hidden = true;
+    commit(sel.value);
+  } });
+  const draw = () => {
+    const current = effective(item);
+    const known = new Set(options.map((o) => o.value));
+    const opts = [h("option", { value: "", text: item.default ? `Default (${item.default})` : "Not set" })];
+    for (const o of options) opts.push(h("option", { value: o.value, text: optionText(o) }));
+    if (current && !known.has(current)) {
+      opts.push(h("option", { value: current, text: loading || !item.source ? current : `${current} (not in the list)` }));
+    }
+    if (!fixed) opts.push(h("option", { value: OTHER, text: "Other…" }));
+    sel.replaceChildren(...opts);
+    sel.value = other.hidden ? current : OTHER;
+  };
+  if (item.source) {
+    note.textContent = "Loading the list…";
+    loadOptions(item, (list, error) => {
+      loading = false;
+      if (list.length || !error) options = list;
+      note.textContent = error ? `List not available: ${error}. Choose "Other…" to type a value.` : "";
+      draw();
+      if (item.key === "GEMINI_LIVE_MODEL") {
+        S.liveModels = error ? null : Object.fromEntries(list.map((o) => [o.value, o.thinking]));
+        updateThinkingHint();
+      }
+    });
+  }
+  draw();
+  return h("div", {}, sel, other, note);
+}
+
+function listPicker(item, input) {
+  // a <select> that appends an offered value to a comma-separated list (e.g. learner models, tried in order)
+  const note = h("div", { class: "help", text: "Loading the list…" });
+  const add = h("select", { disabled: true, style: "margin-top:6px", onchange: () => {
+    const v = add.value;
+    add.value = "";
+    if (!v) return;
+    // an empty field means the default list: extend that one
+    const parts = (input.value.trim() || item.default).split(",").map((p) => p.trim()).filter(Boolean);
+    if (!parts.includes(v)) parts.push(v);
+    input.value = parts.join(",");
+    input.dispatchEvent(new Event("input"));
+  } }, h("option", { value: "", text: "Add…" }));
+  loadOptions(item, (list, error) => {
+    add.replaceChildren(h("option", { value: "", text: "Add…" }), ...list.map((o) => h("option", { value: o.value, text: optionText(o) })));
+    add.disabled = !list.length;
+    note.textContent = error ? `List not available: ${error}` : "";
+  });
+  return [add, note];
+}
+
+function updateThinkingHint() {
+  const f = S.fields.JARVIS_THINKING;
+  const live = findItem("GEMINI_LIVE_MODEL");
+  if (!f || !f.hint || !live) return;
+  const model = effective(live) || live.default;
+  const thinks = S.liveModels ? S.liveModels[model] : undefined;
+  f.hint.textContent = thinks === undefined ? ""
+    : thinks ? `${model} supports thinking.` : `${model} doesn't support thinking: Jarvis leaves this setting out.`;
 }
 
 function field(item, opts = {}) {
@@ -475,6 +595,8 @@ function field(item, opts = {}) {
     } }) : null;
     control = h("div", {}, state, input);
     if (remove) meta.append(remove);
+  } else if (item.kind === "text" && (item.source || item.choices.length || item.suggest.length)) {
+    control = picker(item);
   } else {
     const numeric = item.kind === "int" || item.kind === "float";
     const listId = item.suggest.length ? "dl-" + item.key : null;
@@ -489,7 +611,8 @@ function field(item, opts = {}) {
       },
     });
     control = h("div", {}, input,
-      listId ? h("datalist", { id: listId }, item.suggest.map((s) => h("option", { value: s }))) : null);
+      listId ? h("datalist", { id: listId }, item.suggest.map((s) => h("option", { value: s }))) : null,
+      item.kind === "list" && item.source ? listPicker(item, input) : null);
     if (item.set) {
       meta.append(h("button", { class: "link", type: "button", text: item.default ? "Reset to default" : "Clear",
         onclick: () => {
@@ -498,7 +621,10 @@ function field(item, opts = {}) {
         } }));
     }
   }
-  if (item.kind !== "secret" && item.default) {
+  const picked = item.kind === "text" && (item.source || item.choices.length || item.suggest.length);  // default = first entry
+  const hint = item.key === "JARVIS_THINKING" ? h("span", {}) : null;
+  if (hint) meta.append(hint);
+  if (item.kind !== "secret" && item.default && !picked) {
     meta.prepend(h("span", { text: `Default: ${item.kind === "bool" ? (item.default === "1" ? "on" : "off") : item.default}` }));
   }
   if (item.alias) meta.append(h("span", { text: `Read from the older name ${item.alias}; saving writes ${item.key}.` }));
@@ -507,7 +633,8 @@ function field(item, opts = {}) {
     h("div", {}, h("label", {}, item.label, item.applies === "restart" && !opts.noBadge ? [" ", h("span", { class: "badge", text: "restart" })] : null),
       item.help ? h("div", { class: "help", text: item.help }) : null),
     h("div", {}, control, meta, err));
-  S.fields[item.key] = { el, err };
+  S.fields[item.key] = { el, err, hint };
+  if (hint) setTimeout(updateThinkingHint);
   return el;
 }
 
@@ -993,6 +1120,7 @@ async function loadSetup() {
 
 function renderSetupAssistant() {
   S.fields = {};
+  S.optionLoaders = [];
   const fields = (...keys) => keys.map(findItem).filter(Boolean).map((item) => field(item, { noBadge: true }));
   const answers = {};
   const ob = S.onboarding;

@@ -76,11 +76,14 @@ def _entry_hash(entry: dict) -> str:
 def _entry_text(entry: dict) -> str:
     return f"User: {entry.get('user', '')}\nJarvis: {entry.get('assistant', '')}"
 
+def _embed_model() -> str:
+    return os.getenv("JARVIS_EMBED_MODEL", EMBED_MODEL)
+
 def _embed(texts: list, task_type: str):
     """Embeds texts with the Gemini API. Returns a normalized float32 matrix (len(texts) x EMBED_DIMS) or None on failure."""
     import numpy as np
     import requests
-    model = os.getenv("JARVIS_EMBED_MODEL", EMBED_MODEL)
+    model = _embed_model()
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:batchEmbedContents"
     body = {"requests": [{
         "model": f"models/{model}",
@@ -103,6 +106,7 @@ def _store_embeddings(entries: list) -> int:
     """Embeds archive entries and appends the vectors to archive_vectors.jsonl. Failures are non-fatal."""
     if not entries or not _embeddings_enabled():
         return 0
+    model = _embed_model()
     vectors = _embed([_entry_text(e) for e in entries], "RETRIEVAL_DOCUMENT")
     if vectors is None:
         return 0
@@ -110,15 +114,20 @@ def _store_embeddings(entries: list) -> int:
         with open(VECTORS_FILE, "a", encoding="utf-8") as f:
             for entry, vec in zip(entries, vectors):
                 b64 = base64.b64encode(vec.astype("float16").tobytes()).decode("ascii")
-                f.write(json.dumps({"h": _entry_hash(entry), "v": b64}) + "\n")
+                f.write(json.dumps({"h": _entry_hash(entry), "m": model, "v": b64}) + "\n")
     except Exception as e:
         print(f"[Memory] Failed to store embeddings: {e}", flush=True)
         return 0
     return len(entries)
 
 def _load_vectors() -> dict:
-    """Loads the newest vectors as {entry hash: float32 array}."""
+    """Loads the newest vectors of the current embedding model as {entry hash: float32 array}.
+
+    Vectors of different models don't compare, so after a model change the old ones are skipped (rows without
+    "m" are from EMBED_MODEL) and the entries are found by keyword until scripts/backfill_embeddings re-embeds them.
+    """
     import numpy as np
+    model = _embed_model()
     vectors = {}
     try:
         with open(VECTORS_FILE, "rb") as f:
@@ -132,6 +141,8 @@ def _load_vectors() -> dict:
         for line in lines:
             try:
                 row = json.loads(line)
+                if row.get("m", EMBED_MODEL) != model:
+                    continue
                 vectors[row["h"]] = np.frombuffer(base64.b64decode(row["v"]), dtype=np.float16).astype(np.float32)
             except (ValueError, KeyError):
                 continue

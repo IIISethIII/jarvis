@@ -3,6 +3,8 @@ import numpy as np
 import openwakeword
 from openwakeword.model import Model
 
+from core import wakewords
+
 import time
 
 THRESHOLD = float(os.getenv("JARVIS_WAKE_THRESHOLD", "0.5"))
@@ -14,15 +16,13 @@ class WakeWordDetector:
         model_name = model_name or os.getenv("JARVIS_WAKE_MODEL", "hey_jarvis")
         self.last_trigger_time = 0
         self.near_miss_peak = 0.0
-        # Get the absolute paths to all pre-trained models bundled in the library
-        pretrained_paths = openwakeword.get_pretrained_model_paths()
-        
-        # Find the path that matches our requested model name
-        target_path = next((p for p in pretrained_paths if model_name in p), None)
-        
+        # Your own model in data/wakewords/ or one that comes with openWakeWord (core/wakewords.py)
+        target_path = wakewords.find(model_name)
         if not target_path:
-            print(f"[WakeWord] Model '{model_name}' not found. Falling back to 'hey_jarvis'.")
-            target_path = next((p for p in pretrained_paths if "hey_jarvis" in p), None)
+            print(f"[WakeWord] Model '{model_name}' not found. Falling back to 'hey_jarvis'.", flush=True)
+            target_path = wakewords.find("hey_jarvis") or next(
+                (p for p in openwakeword.get_pretrained_model_paths() if "hey_jarvis" in p), None)
+        print(f"[WakeWord] Model: {target_path}", flush=True)
 
         try:
             # The library infers the framework from the file extension in 0.4.0

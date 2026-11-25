@@ -294,6 +294,56 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(saved["memory"], {"url": "http://mem/mcp", "type": "stateless", "include": ["bm_search"]})
         self.assertEqual([s["name"] for s in data["servers"]], ["gw", "memory"])
 
+    def test_option_lists(self):
+        self.setup_password()
+        settings = self.request("GET", "/api/settings")[1]
+        live = next(s for g in settings["groups"] for s in g["settings"] if s["key"] == "GEMINI_LIVE_MODEL")
+        self.assertEqual((live["source"], live["source_deps"]), ("gemini-live", ["GEMINI_KEYS"]))
+        fake = FakeUpstream()
+        old_api = web.GEMINI_API
+        web.GEMINI_API = f"http://127.0.0.1:{fake.port}"
+        web.app.cache.clear()
+
+        def options(source, values=None):
+            status, data, _ = self.request("POST", "/api/options", {"source": source, "values": values or {}})
+            self.assertEqual(status, 200, data)
+            return [o["value"] for o in data["options"]], data["error"], data["options"]
+
+        try:
+            # the saved key is rejected: no list, the reason instead
+            values, error, _ = options("gemini-live")
+            self.assertEqual(values, [])
+            self.assertIn("API key not valid", error)
+            # a key typed into the form wins over the saved one; filtered by what the models support, newest first
+            typed = {"GEMINI_KEYS": GOOD_KEY}
+            values, error, opts = options("gemini-live", typed)
+            self.assertIsNone(error)
+            self.assertEqual(values, ["gemini-3.8-live", "gemini-3.8-live-extended-thinking",
+                                      "gemini-2.5-flash-native-audio-latest"])
+            self.assertEqual([o["thinking"] for o in opts], [False, True, True])
+            self.assertEqual(options("gemini-text", typed)[0], ["gemini-3.8-flash"])
+            self.assertEqual(options("gemini-embed", typed)[0], ["gemini-embedding-001"])
+            self.assertEqual(fake.gemini_calls, 2, "one models.list per key, then cached")
+            base = f"http://127.0.0.1:{fake.port}"
+            self.assertEqual(options("openclaw-agents", {"OPENCLAW_URL": base, "OPENCLAW_TOKEN": "good"})[0],
+                             ["default", "main"])
+            self.assertIn("401", options("openclaw-agents", {"OPENCLAW_URL": base, "OPENCLAW_TOKEN": "bad"})[1])
+            self.assertIn("first", options("openclaw-agents")[1])
+        finally:
+            web.GEMINI_API = old_api
+            web.app.cache.clear()
+            fake.stop()
+        os.makedirs(os.path.join(self.dir, "wakewords"))
+        open(os.path.join(self.dir, "wakewords", "computer_v0.2.onnx"), "w").close()
+        os.environ["JARVIS_DATA_DIR"] = self.dir
+        try:
+            _, _, opts = options("wakeword")
+            self.assertIn({"value": "computer", "label": "computer", "note": "your own"}, opts)
+        finally:
+            os.environ.pop("JARVIS_DATA_DIR")
+        self.assertEqual(self.request("POST", "/api/options", {"source": "nope"})[0], 400)
+        self.assertEqual(self.request("POST", "/api/options", {"source": "wakeword"}, csrf=False)[0], 403)
+
     def test_connection_tests_against_fake_servers(self):
         self.setup_password()
         fake = FakeUpstream()
@@ -355,10 +405,27 @@ class WebServerTest(unittest.TestCase):
         self.assertEqual(data["timers"], [{"label": "Aufstehen", "kind": "alarm", "due": 2e9}])
 
 
+GOOD_KEY = "AIzaGoodFakeKeyForTheModelList1234"
+MODELS = [  # a cut of a real models.list answer
+    {"name": "models/gemini-3.8-flash", "supportedGenerationMethods": ["generateContent", "createCachedContent"], "thinking": True},
+    {"name": "models/gemini-2.5-flash-image", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+    {"name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"]},
+    {"name": "models/gemini-2.5-flash-native-audio-latest", "supportedGenerationMethods": ["bidiGenerateContent"], "thinking": True},
+    {"name": "models/gemini-3.5-transcribe-live", "supportedGenerationMethods": ["bidiGenerateContent"]},
+    {"name": "models/gemini-3.8-live-extended-thinking", "supportedGenerationMethods": ["bidiGenerateContent"], "thinking": True},
+    {"name": "models/gemini-3.8-live", "displayName": "Gemini 3.8 Live", "supportedGenerationMethods": ["bidiGenerateContent"]},
+    {"name": "models/genie-4", "supportedGenerationMethods": ["bidiGenerateContent"]},
+    {"name": "models/lyria-realtime-exp", "supportedGenerationMethods": ["bidiGenerateMusic"]},
+]
+
+
 class FakeUpstream:
-    """Tiny HTTP server playing an MCP server (SSE and stateless) and Home Assistant."""
+    """Tiny HTTP server playing an MCP server (SSE and stateless), Home Assistant, the Gemini model list and OpenClaw."""
 
     def __init__(self):
+        self.gemini_calls = 0
+        outer = self
+
         class H(http.server.BaseHTTPRequestHandler):
             def log_message(self, *a):
                 pass
@@ -381,6 +448,18 @@ class FakeUpstream:
                     self.wfile.write(f"event: endpoint{nl}data: /messages/?session_id=1{nl}{nl}".encode())
                     self.wfile.flush()
                     time.sleep(3)
+                elif self.path.startswith("/v1beta/models"):
+                    outer.gemini_calls += 1
+                    if self.headers.get("x-goog-api-key") == GOOD_KEY:
+                        self._send(200, json.dumps({"models": MODELS}))
+                    else:
+                        self._send(400, json.dumps({"error": {"code": 400, "message": "API key not valid."}}))
+                elif self.path == "/v1/models":
+                    if self.headers.get("Authorization") == "Bearer good":
+                        self._send(200, json.dumps({"object": "list", "data": [
+                            {"id": "openclaw"}, {"id": "openclaw/default"}, {"id": "openclaw/main"}]}))
+                    else:
+                        self._send(401, "{}")
                 elif self.path == "/api/config":
                     if self.headers.get("Authorization") == "Bearer good":
                         self._send(200, json.dumps({"location_name": "Home", "version": "2026.11.1"}))

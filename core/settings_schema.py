@@ -11,7 +11,9 @@ Fields of a setting:
   default   the value the code uses when the key is missing, as it is written in .env ("" = none)
   min, max  range for int / float
   choices   allowed values (anything else is rejected)
-  suggest   offered values, others are allowed (e.g. voices, models)
+  suggest   offered values, others are allowed (e.g. voices)
+  source    the web UI asks the server for the offered values (web/server.py OPTION_SOURCES, e.g. the models the
+            Gemini key can use right now); others are allowed
   applies   "restart": takes effect after a Jarvis restart; "session": at the next wake word (main.py re-reads
             these from .env before every conversation); "web": web UI only
   ui        False hides it from the form (paths used by tests)
@@ -60,6 +62,7 @@ class Setting:
     max: float = None
     choices: tuple = ()
     suggest: tuple = ()
+    source: str = ""
     applies: str = "restart"
     ui: bool = True
     aliases: tuple = field(default=())
@@ -78,8 +81,12 @@ SETTINGS = [
     # Gemini
     S("GEMINI_KEYS", "gemini", "API keys", "One or more Gemini API keys, comma-separated. Jarvis rotates through them "
       "after each conversation and on quota errors.", kind="secret", aliases=("GEMINI_API_KEY", "GEMINI_KEY")),
-    S("GEMINI_LIVE_MODEL", "gemini", "Live model", "Model for the voice conversation.",
-      default="gemini-3.1-flash-live-preview", suggest=("gemini-3.1-flash-live-preview",), applies="session"),
+    S("GEMINI_LIVE_MODEL", "gemini", "Live model", "Model for the voice conversation. The list shows the live "
+      "models your key can use.", default="gemini-3.8-live", source="gemini-live", applies="session"),
+    S("JARVIS_THINKING", "gemini", "Thinking", "How long the live model may reason before it answers: better answers "
+      "to hard questions, but slower. Only models marked 'thinking' support it; 'Not set' = the model's default. "
+      "If the model rejects a level, Jarvis logs it and uses one it accepts.",
+      choices=("minimal", "low", "medium", "high"), applies="session"),
 
     # Home Assistant
     S("HA_URL", "home_assistant", "URL", "e.g. http://homeassistant.local:8123", kind="url"),
@@ -94,7 +101,7 @@ SETTINGS = [
       "gateway.http.endpoints.chatCompletions.enabled = true.", kind="url"),
     S("OPENCLAW_TOKEN", "openclaw", "Gateway token", "Grants full operator access: only use it on your LAN.", kind="secret"),
     S("OPENCLAW_NAME", "openclaw", "Agent name", "Name Jarvis uses for the agent.", default="OpenClaw"),
-    S("OPENCLAW_AGENT", "openclaw", "Agent id", default="default"),
+    S("OPENCLAW_AGENT", "openclaw", "Agent id", default="default", source="openclaw-agents"),
     S("OPENCLAW_MODEL", "openclaw", "Model override", "provider/model; empty = the agent's own model."),
     S("OPENCLAW_TIMEOUT", "openclaw", "Timeout (s)", "Seconds to wait for an answer.", kind="float", default="90", min=5, max=600),
     S("OPENCLAW_SESSION_IDLE_MIN", "openclaw", "New session after (min)", "After this many idle minutes the next "
@@ -107,22 +114,23 @@ SETTINGS = [
       kind="int", default="30", min=0, max=1440, applies="session"),
     S("JARVIS_EMBEDDINGS", "memory", "Semantic archive search", "Gemini embeddings for the archive search. "
       "Off = keyword search only.", kind="bool", default="1", applies="session"),
-    S("JARVIS_EMBED_MODEL", "memory", "Embedding model", default="gemini-embedding-001", applies="session"),
+    S("JARVIS_EMBED_MODEL", "memory", "Embedding model", "After a change, older conversations are found by "
+      "keyword only until you run python -m scripts.backfill_embeddings.", default="gemini-embedding-001", source="gemini-embed", applies="session"),
     S("JARVIS_BASIC_MEMORY_PROJECT", "memory", "Basic Memory project", "Project Jarvis reads with bm_search / bm_read "
       "(only if a Basic Memory MCP server is configured).", default="main", applies="session"),
 
     # Learner
     S("JARVIS_LEARNER", "learner", "Learner on", "Off: Jarvis only reads the workspace files.", kind="bool", default="1"),
     S("JARVIS_LEARNER_MODELS", "learner", "Models", "Text models, tried in this order (503 -> next model, 429 -> next key).",
-      kind="list", default="gemini-3.8-flash,gemini-3.6-flash"),
+      kind="list", default="gemini-3.8-flash,gemini-3.6-flash", source="gemini-text"),
     S("JARVIS_LEARNER_DELAY_MIN", "learner", "Review delay (min)", "Minutes after the last conversation before "
       "ordinary conversations are reviewed. Notes from 'remember' go right away.", kind="float", default="10", min=0, max=1440),
     S("JARVIS_REFLECT_HOUR", "learner", "Nightly reflection hour", "Hour of the nightly reflection, -1 = off.",
       kind="int", default="4", min=-1, max=23),
 
     # Microphone and sound
-    S("JARVIS_WAKE_MODEL", "audio", "Wake word model", "A pretrained openWakeWord model.", default="hey_jarvis",
-      suggest=("hey_jarvis", "alexa", "hey_mycroft", "hey_rhasspy")),
+    S("JARVIS_WAKE_MODEL", "audio", "Wake word model", "An openWakeWord model: one that comes with openWakeWord, "
+      "or your own .onnx file in data/wakewords/.", default="hey_jarvis", source="wakeword"),
     S("JARVIS_WAKE_THRESHOLD", "audio", "Wake word threshold", "Confidence 0-1. Lower = reacts more easily, also to "
       "false alarms. Scores from 60 % of it upwards are logged as near misses.", kind="float", default="0.5", min=0.05, max=0.99),
     S("JARVIS_MIC_HIGHPASS", "audio", "Microphone high-pass (Hz)", "Cutoff against mains hum and rumble, 0 = off.",

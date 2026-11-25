@@ -16,10 +16,34 @@ SERVER_VAD_STUCK_S = 2.0  # Gemini reports user speech, but the local VAD heard 
 
 PRE_ANSWER_THINKING_S = 10  # thinking sound while waiting for Gemini's first answer (no tool call yet)
 
+# Thinking models (e.g. *-extended-thinking) may reason in the background after a short spoken heads-up: that turn
+# ends with interaction_status IN_PROGRESS and the answer follows as a later turn. The session waits this long.
+BACKGROUND_MAX_S = 90
+THINKING_LEVELS = ("minimal", "low", "medium", "high")
 
-def live_config(system_prompt, function_declarations):
-    """Live session config: audio out with transcripts both ways. Shared with tests/conversations/run.py."""
+
+def thinking_fallback(error, level):
+    """The model rejected the thinking setting at connect (WebSocket close 1007): the level to try instead
+    ("" = no thinking config), or None if the error is about something else.
+
+    Measured on gemini-3.8-live ("Thinking level is not supported for this model"), the extended thinking model
+    ("Thinking level must be specified", "Thinking level MINIMAL is not supported ... retry with other level").
+    """
+    msg = str(error).lower()
+    if "thinking" not in msg:
+        return None
+    if "must be specified" in msg or (level and f"level {level} is not supported" in msg):
+        return "low" if level != "low" else "medium"
+    if "not supported" in msg:
+        return ""
+    return None
+
+
+def live_config(system_prompt, function_declarations, thinking=""):
+    """Live session config: audio out with transcripts both ways. Shared with tests/conversations/run.py.
+    thinking: one of THINKING_LEVELS, or "" for the model's default (no thinking config sent)."""
     voice = os.getenv("JARVIS_VOICE", "Zubenelgenubi")
+    extra = {"thinking_config": types.ThinkingConfig(thinking_level=thinking)} if thinking else {}
     return types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         input_audio_transcription=types.AudioTranscriptionConfig(),
@@ -32,11 +56,15 @@ def live_config(system_prompt, function_declarations):
                     voice_name=voice
                 )
             )
-        )
+        ),
+        **extra,
     )
 
 
 class GeminiLiveProvider:
+    # (model, configured level) -> level the model accepted instead (see thinking_fallback), for this process
+    thinking_accepted = {}
+
     def __init__(self):
         # Support multiple keys for rotation & quota fallback
         keys_env = os.getenv("GEMINI_KEYS") or os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_KEY")
@@ -56,7 +84,12 @@ class GeminiLiveProvider:
 
     def load_session_settings(self):
         """Settings read at the start of every conversation (main.py re-reads .env for them before)."""
-        self.model_name = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
+        self.model_name = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live")
+        thinking = os.getenv("JARVIS_THINKING", "").strip().lower()
+        if thinking and thinking not in THINKING_LEVELS:
+            print(f"[LLM] Unknown JARVIS_THINKING '{thinking}' (use {', '.join(THINKING_LEVELS)}), ignored.", flush=True)
+            thinking = ""
+        self.thinking = thinking
         # Session end: seconds of silence after Jarvis spoke, see _close_reason
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
@@ -107,8 +140,6 @@ class GeminiLiveProvider:
             all_tools.extend(dynamic_tools)
         system_prompt = prompt.build({t.name for t in all_tools})
 
-        config = live_config(system_prompt, all_tools)
-
         # user_parts / jarvis_parts collect the transcript fragments of the current turn (see _flush_turn)
         state = {
             'last_activity': time.time(),
@@ -125,11 +156,16 @@ class GeminiLiveProvider:
             'end_requested': False,  # end_conversation was called: close after end_grace seconds of silence
             'end_call_id': None,  # its function call, answered only if the user keeps talking (_cancel_end)
             'thinking_at': None,  # when the thinking sound starts if Gemini hasn't answered yet (_start_thinking_if_due)
+            'background_since': None,  # Gemini reasons in the background (turn_complete with IN_PROGRESS) since then
         }
+        thinking_key = (self.model_name, self.thinking)
 
         async def _do_connect(client_instance):
             key_prev = self.api_keys[self.current_key_index][:8] + "..."
-            print(f"[LLM] Connecting to Gemini Live API ({self.model_name}) using key #{self.current_key_index + 1} ({key_prev})...")
+            thinking = self.thinking_accepted.get(thinking_key, self.thinking)
+            label = f", thinking {thinking}" if thinking else ""
+            print(f"[LLM] Connecting to Gemini Live API ({self.model_name}{label}) using key #{self.current_key_index + 1} ({key_prev})...")
+            config = live_config(system_prompt, all_tools, thinking)
             async with client_instance.aio.live.connect(model=self.model_name, config=config) as session:
                 self.session = session
                 print("[LLM] Connected! Start speaking.")
@@ -176,7 +212,10 @@ class GeminiLiveProvider:
         # time jumps to everything since Jarvis last spoke, and _inactivity_loop should close that gracefully
         watchdog_s = max(30.0, self.idle_timeout + self.speech_grace + self.max_speech + self.answer_wait + 10.0)
 
-        for attempt in range(max_attempts):
+        attempt = 0
+        tried_thinking = {self.thinking_accepted.get(thinking_key, self.thinking)}
+        while attempt < max_attempts:
+            attempt += 1
             try:
                 connect_task = asyncio.create_task(_do_connect(self.client))
                 
@@ -209,8 +248,18 @@ class GeminiLiveProvider:
                 return
             except Exception as e:
                 err_msg = str(e)
-                print(f"[LLM] Error with API Key #{self.current_key_index + 1}: {err_msg}")
                 last_error = e
+                current = self.thinking_accepted.get(thinking_key, self.thinking)
+                fallback = thinking_fallback(err_msg, current)
+                if fallback is not None and fallback not in tried_thinking:
+                    # Not the key's fault: retry right away with a level the model accepts, and remember it
+                    print(f"[LLM] {self.model_name} rejected thinking '{current or 'default'}' ({err_msg}). "
+                          f"Using '{fallback or 'default'}' instead; set JARVIS_THINKING to choose.", flush=True)
+                    tried_thinking.add(fallback)
+                    self.thinking_accepted[thinking_key] = fallback
+                    attempt -= 1
+                    continue
+                print(f"[LLM] Error with API Key #{self.current_key_index + 1}: {err_msg}")
                 # Check for rate limit / quota / transient error to rotate
                 if any(code in err_msg.lower() for code in ["429", "quota", "resource_exhausted", "unavailable", "internal"]):
                     print("[LLM] Quota or transient error detected. Trying fallback key...")
@@ -230,6 +279,30 @@ class GeminiLiveProvider:
             # Re-raise so caller is aware after trying all keys
             raise last_error
 
+    @staticmethod
+    def _interaction_status(response, server_content):
+        """'IN_PROGRESS' / 'IDLE' from models that reason or run tools in the background, else None.
+        The docs show it on server_content and on the message itself; SDKs before ~2.30 drop it."""
+        for obj in (server_content, response):
+            value = getattr(obj, 'interaction_status', None)
+            if value is not None:
+                return str(getattr(value, 'value', value))
+        return None
+
+    def _track_background(self, state, interrupted, turn_complete, interaction, sfx):
+        """A turn that ends with IN_PROGRESS was only a heads-up ("Ich rechne das kurz aus"): the answer follows
+        as a later turn, so the session waits for it (see _idle_seconds) with the thinking sound, like a tool call."""
+        if interrupted or interaction == 'IDLE':
+            if state['background_since']:
+                print(f"[LLM] Background reasoning done after {time.time() - state['background_since']:.1f}s.", flush=True)
+            state['background_since'] = None
+        elif turn_complete and interaction == 'IN_PROGRESS' and not state['background_since']:
+            state['background_since'] = time.time()
+            print("[LLM] Gemini keeps working in the background, waiting for its answer...", flush=True)
+            if sfx and not state.get('is_thinking') and not state.get('tool_running'):
+                state['is_thinking'] = True
+                sfx.play_thinking(after_speech=True, seconds=BACKGROUND_MAX_S, fade_in=True)
+
     def _idle_seconds(self, state, audio_manager):
         """Seconds of silence: counted from the end of playback, frozen while speech plays, a tool runs or the user speaks."""
         # Gemini streams audio faster than real time, so the last chunk arrives long before playback ends.
@@ -237,6 +310,10 @@ class GeminiLiveProvider:
         if audio_manager.is_playing or state.get('tool_running', False):
             return 0.0
         now = time.time()
+        # A thinking model said a heads-up and is still reasoning: its answer comes as a later turn
+        background = state.get('background_since')
+        if background and now - background < BACKGROUND_MAX_S:
+            return 0.0
         # Server VAD says the user is speaking. Endless "speech" is background audio (music, TV), so it stops counting.
         speaking_since = state.get('speaking_since')
         if speaking_since and now - speaking_since < self.max_speech:
@@ -446,10 +523,12 @@ class GeminiLiveProvider:
                     if server_content is not None:
                         interrupted = getattr(server_content, 'interrupted', None)
                         turn_complete = getattr(server_content, 'turn_complete', None)
+                        interaction = self._interaction_status(response, server_content)
                         if interrupted or turn_complete or getattr(server_content, 'waiting_for_input', None):
                             reason = getattr(server_content, 'turn_complete_reason', None)
                             print(f"[LLM] Server: interrupted={bool(interrupted)} turn_complete={bool(turn_complete)} "
-                                  f"reason={reason} waiting_for_input={getattr(server_content, 'waiting_for_input', None)}", flush=True)
+                                  f"reason={reason} waiting_for_input={getattr(server_content, 'waiting_for_input', None)}"
+                                  f"{f' status={interaction}' if interaction else ''}", flush=True)
 
                         if interrupted:
                             self._flush_turn(state)
@@ -516,6 +595,7 @@ class GeminiLiveProvider:
                                 self._flush_turn(state)
                             hardware.set_color("purple", blink=False) # Solid violet = waiting for input
                             print("") # Print newline after Jarvis finishes speaking
+                        self._track_background(state, interrupted, turn_complete, interaction, sfx)
                             
                     tool_call = getattr(response, 'tool_call', None)
                     if tool_call is not None:

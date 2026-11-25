@@ -41,7 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from core import envfile, settings_schema as schema, status, workspace  # noqa: E402  (stdlib-only modules)
+from core import envfile, settings_schema as schema, status, wakewords, workspace  # noqa: E402  (stdlib-only modules)
 
 ENV_PATH = envfile.DEFAULT_PATH
 STATIC_DIR = os.path.join(ROOT, "web", "static")
@@ -311,6 +311,7 @@ def settings_payload(values=None):
             item = {
                 "key": s.key, "label": s.label, "help": s.help, "kind": s.kind, "default": s.default,
                 "min": s.min, "max": s.max, "choices": list(s.choices), "suggest": list(s.suggest),
+                "source": s.source or None, "source_deps": list(OPTION_SOURCES[s.source][0]) if s.source else [],
                 "applies": s.applies, "alias": via,
                 # an empty secret (GEMINI_KEYS= from .env.example) is no secret
                 "set": bool(raw) if s.kind == "secret" else raw is not None,
@@ -699,8 +700,8 @@ def test_mcp(url, kind):
     return {"ok": False, "detail": "reachable, but it doesn't speak MCP over SSE (try type 'stateless')"}
 
 
-def connection_test(what, typed):
-    """Tests with the values typed into the form, else the saved ones."""
+def form_values(typed):
+    """get(key): the value typed into the form (saved or not), else the saved one, else the default."""
     values = env()
     typed = {k: v for k, v in (typed or {}).items() if isinstance(v, str) and v.strip()}
 
@@ -712,7 +713,12 @@ def connection_test(what, typed):
             if values.get(k):
                 return values[k]
         return s.default
+    return get
 
+
+def connection_test(what, typed):
+    """Tests with the values typed into the form, else the saved ones."""
+    get = form_values(typed)
     if what == "gemini":
         return test_gemini(get("GEMINI_KEYS"), get("GEMINI_LIVE_MODEL"))
     if what == "home_assistant":
@@ -720,6 +726,122 @@ def connection_test(what, typed):
     if what == "openclaw":
         return test_openclaw(get("OPENCLAW_URL"), get("OPENCLAW_TOKEN"))
     raise HTTPError(400, f"nothing to test for {what!r}")
+
+
+# --- Offered values (dropdowns) ---------------------------------------------------------------
+# A setting with source="..." in the schema gets its dropdown from here, so the lists follow what is really
+# available (the models a key can use today, the installed wake word models) instead of a list in the code.
+
+GEMINI_API = "https://generativelanguage.googleapis.com"  # tests point this at a fake server
+GEMINI_MODELS_TTL_S = 600
+
+
+class OptionsError(Exception):
+    """Why a list can't be loaded right now (no key yet, not reachable); the page then offers free input."""
+
+
+def _newest_first(items):
+    """Higher version numbers first (gemini-3.8-* before gemini-3.1-*), names without numbers last; equal
+    versions alphabetically, so gemini-3.8-live comes before gemini-3.8-live-extended-thinking."""
+    items.sort(key=lambda o: o["value"])
+    items.sort(key=lambda o: tuple(int(n) for n in re.findall(r"\d+", o["value"])), reverse=True)  # stable
+    return items
+
+
+def gemini_models(key):
+    """models.list of the Gemini API for this key: [{name, displayName, supportedGenerationMethods, thinking, ...}]."""
+    code, text, err = http_probe("GET", f"{GEMINI_API}/v1beta/models?pageSize=1000", {"x-goog-api-key": key},
+                                 limit=4 << 20)
+    if err:
+        raise OptionsError(f"Gemini API {err}")
+    if code != 200:
+        raise OptionsError(f"the Gemini API answered HTTP {code}: {_json_error(text)}")
+    try:
+        return json.loads(text).get("models") or []
+    except (ValueError, AttributeError):
+        raise OptionsError("the Gemini API sent no model list")
+
+
+def gemini_options(models, kind):
+    """The models that fit a setting, judged by what the API says they support:
+    live: bidirectional streaming (the name keeps out streaming models for video, music, robotics, transcription
+    and translation); text: generateContent plus context caching, which image, TTS, music and agent models lack;
+    embed: embedContent."""
+    out = []
+    for m in models:
+        mid = str(m.get("name", "")).split("/", 1)[-1]
+        methods = set(m.get("supportedGenerationMethods") or [])
+        if kind == "live":
+            fits = ("bidiGenerateContent" in methods and ("live" in mid or "native-audio" in mid)
+                    and not any(w in mid for w in ("transcribe", "translate")))
+        elif kind == "text":
+            fits = "generateContent" in methods and "createCachedContent" in methods
+        else:
+            fits = "embedContent" in methods
+        if fits and mid:
+            # only live models differ in thinking (all current text models think), so only they are marked
+            out.append({"value": mid, "label": m.get("displayName") or mid,
+                        "thinking": bool(m.get("thinking")) if kind == "live" else None})
+    return _newest_first(out)
+
+
+def _gemini_source(kind):
+    def load(get):
+        keys = [k.strip() for k in get("GEMINI_KEYS").split(",") if k.strip()]
+        if not keys:
+            raise OptionsError("enter a Gemini API key first")
+        error = None
+        for key in keys[:3]:
+            name = "gemini-models:" + hashlib.sha256(key.encode()).hexdigest()[:12]
+            try:
+                return gemini_options(app.cached(name, GEMINI_MODELS_TTL_S, lambda: gemini_models(key)), kind)
+            except OptionsError as e:
+                error = e
+        raise error
+    return load
+
+
+def _wakeword_source(get):
+    models = wakewords.available()
+    if not models:
+        raise OptionsError("no models found (is openWakeWord installed in this Python environment?)")
+    return [{"value": n, "label": n, "note": "your own" if origin == "own" else None} for n, _, origin in models]
+
+
+def _openclaw_agents_source(get):
+    url, token = get("OPENCLAW_URL"), get("OPENCLAW_TOKEN")
+    if not url or not token:
+        raise OptionsError("enter the gateway URL and token first")
+    code, text, err = http_probe("GET", f"{url.rstrip('/')}/v1/models", {"Authorization": f"Bearer {token}"})
+    if err:
+        raise OptionsError(f"OpenClaw {err}")
+    if code != 200:
+        raise OptionsError(f"OpenClaw answered HTTP {code}: {_json_error(text)}")
+    try:
+        ids = [str(m.get("id", "")) for m in json.loads(text).get("data", [])]
+    except (ValueError, AttributeError, TypeError):
+        raise OptionsError("OpenClaw sent no agent list")
+    # /v1/models lists the agents as openclaw/<agent id>
+    return [{"value": i.split("/", 1)[1], "label": i.split("/", 1)[1]} for i in ids if i.startswith("openclaw/")]
+
+
+# source -> (settings the list depends on, so the page reloads it when they change; loader(get))
+OPTION_SOURCES = {
+    "gemini-live": (("GEMINI_KEYS",), _gemini_source("live")),
+    "gemini-text": (("GEMINI_KEYS",), _gemini_source("text")),
+    "gemini-embed": (("GEMINI_KEYS",), _gemini_source("embed")),
+    "wakeword": ((), _wakeword_source),
+    "openclaw-agents": (("OPENCLAW_URL", "OPENCLAW_TOKEN"), _openclaw_agents_source),
+}
+
+
+def options_payload(source, typed):
+    if source not in OPTION_SOURCES:
+        raise HTTPError(400, f"unknown list {source!r}")
+    try:
+        return {"options": OPTION_SOURCES[source][1](form_values(typed)), "error": None}
+    except OptionsError as e:
+        return {"options": [], "error": str(e)}
 
 
 # --- Timers ------------------------------------------------------------------------------------
@@ -891,7 +1013,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         private = {("GET", "/api/status"): self.api_status, ("GET", "/api/settings"): self.api_settings,
                    ("PUT", "/api/settings"): self.api_save_settings, ("GET", "/api/logs"): self.api_logs,
                    ("POST", "/api/restart"): self.api_restart, ("POST", "/api/password"): self.api_password,
-                   ("POST", "/api/test"): self.api_test,
+                   ("POST", "/api/test"): self.api_test, ("POST", "/api/options"): self.api_options,
                    ("GET", "/api/workspace"): self.api_workspace,
                    ("PUT", "/api/workspace/file"): self.api_workspace_file,
                    ("PUT", "/api/workspace/skill"): self.api_workspace_skill,
@@ -983,6 +1105,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api_test(self):
         body = self._body()
         self._json({"results": connection_test(body.get("what"), body.get("values"))})
+
+    def api_options(self):
+        body = self._body()
+        self._json(options_payload(body.get("source"), body.get("values")))
 
     def api_workspace(self):
         self._json(workspace_payload())

@@ -110,7 +110,7 @@ async def run_session(client, model, config, turns, stubs, session_id, log):
 
 async def _receive_turn(session, stubs, session_id, log):
     from google.genai import types
-    from core import tools
+    from core import llm, tools
     parts, calls, ended = [], [], False
     pending_answer = False  # a tool response was sent: the model answers in a further turn
     start = time.time()
@@ -130,7 +130,8 @@ async def _receive_turn(session, stubs, session_id, log):
             if ot is not None and getattr(ot, "text", None):
                 parts.append(ot.text)
             if getattr(sc, "turn_complete", None):
-                if pending_answer:
+                # IN_PROGRESS: a thinking model only said a heads-up, its answer follows as a further turn
+                if pending_answer or llm.GeminiLiveProvider._interaction_status(response, sc) == "IN_PROGRESS":
                     pending_answer = False
                     it = session.receive().__aiter__()
                     continue
@@ -179,12 +180,13 @@ def run_scenario(path, args, log):
 
     declarations = list(tools.FUNCTION_DECLARATIONS) + args.dynamic_tools
     keys = learner._api_keys()
-    model = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.1-flash-live-preview")
+    model = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live")
+    thinking = os.getenv("JARVIS_THINKING", "").strip().lower()
     stubs = sc.get("stubs", {})
     for i, s in enumerate(sc.get("sessions", []), 1):
         label = f"session {i}"
         system_prompt = prompt.build({d.name for d in declarations}, include_ha=not args.no_ha)
-        config = llm.live_config(system_prompt, declarations)
+        config = llm.live_config(system_prompt, declarations, thinking)
         session_id = time.strftime("%Y%m%d-%H%M%S") + f"-{i}"
         log(f" {label} ({len(system_prompt)} prompt chars)")
         calls, answer = None, ""

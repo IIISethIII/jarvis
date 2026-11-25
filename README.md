@@ -20,6 +20,7 @@ core/
   audio.py           mic process, playback, ALSA mixer setup
   wake.py            openWakeWord detector
   sfx.py             UI sounds (raw PCM)
+  wakewords.py       finds wake word models: your own .onnx in data/wakewords/, then openWakeWord's
   hardware.py        Voice Bonnet V2 RGB LED (mock fallback without smbus2)
   ha.py              Home Assistant REST wrapper
   memory.py          data/core_memory.md, data/archive.jsonl + embeddings for semantic search (not in git)
