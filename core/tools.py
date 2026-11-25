@@ -1,6 +1,7 @@
 import subprocess
 from google.genai import types
 from core.ha import HomeAssistant
+from core import calculator
 from core import memory
 from core import openclaw
 from core import weather
@@ -67,6 +68,9 @@ def ask_openclaw(task: str):
 
 def get_weather(location: str):
     return weather.get_weather(location)
+
+def calculate(expression: str):
+    return calculator.calculate(expression)
 
 def manage_timer(action: str, seconds: int = 0, time: str = "", date: str = "", label: str = "", timer_id: str = ""):
     """Sets, lists or cancels timers and alarms (see core/timers.py)."""
@@ -258,6 +262,20 @@ FUNCTION_DECLARATIONS = [
         ),
     ),
     types.FunctionDeclaration(
+        name="calculate",
+        description="Calculates exactly: arithmetic, percentages, powers, roots, rounding and date math (days between dates, weekdays, date in N days). Use it for every calculation instead of calculating in your head. Returns the expression with its result.",
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={
+                "expression": types.Schema(
+                    type=types.Type.STRING,
+                    description=calculator.SYNTAX,
+                ),
+            },
+            required=["expression"],
+        ),
+    ),
+    types.FunctionDeclaration(
         name="end_conversation",
         description="Ends the conversation after a short pause. Only for a clear, complete goodbye ('Thanks', 'Bye', 'Stop', 'That's it'). Not for sentence fragments, questions, insults or swearing. When in doubt, don't call it: the session also ends after silence.",
     ),
@@ -295,6 +313,7 @@ TOOL_IMPLEMENTATIONS = {
     'manage_timer': manage_timer,
     'ask_openclaw': ask_openclaw,
     'get_weather': get_weather,
+    'calculate': calculate,
     'end_conversation': end_conversation,
 }
 

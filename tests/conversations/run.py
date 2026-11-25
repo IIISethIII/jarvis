@@ -5,7 +5,7 @@
 
 Each scenario runs in a throwaway data directory (archive and workspace), starting from a copy of --workspace
 or from the templates. Tools with side effects are stubbed; remember, load_skills, search_archive, get_ha_details,
-get_weather, end_conversation and the read-only Basic Memory tools (bm_search, bm_read) run for real. After every session the learner runs like in production, then the checks.
+get_weather, calculate, end_conversation and the read-only Basic Memory tools (bm_search, bm_read) run for real. After every session the learner runs like in production, then the checks.
 Needs network, the Gemini keys from .env and (by default) Home Assistant and the MCP servers for the tool list.
 
 Scenario file (JSON):
@@ -45,7 +45,7 @@ STUBS = {
     "get_pi_temperature": "Pi Temperature: temp=45.0'C",
     "ask_openclaw": "Test: no answer available in this test.",
 }
-REAL = {"remember", "load_skills", "search_archive", "get_ha_details", "get_weather", "end_conversation"}
+REAL = {"remember", "load_skills", "search_archive", "get_ha_details", "get_weather", "calculate", "end_conversation"}
 REAL_MCP = {"bm_search", "bm_read"}  # read-only MCP tools, run for real unless the scenario stubs them
 TURN_TIMEOUT = 90
 QUIET_TIMEOUT = 25  # no message at all for this long = the model stays silent

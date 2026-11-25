@@ -20,6 +20,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - LEDs (Voice Bonnet V2) und SFX als PCM (wake, sleep, thinking, success, error)
 - Smart Home: generisches `call_ha_service`, kompakte Geräte- und Service-Übersicht im Prompt (`core/ha_context.py`, Budget `JARVIS_HA_CONTEXT_CHARS`), Details, Suche, Service-Parameter, Einkaufslisten und Kalender auf Nachfrage per `get_ha_details`, Entities ausblendbar per `JARVIS_HA_EXCLUDE`
 - Wetter ohne HA und ohne API-Key per `get_weather` (`core/weather.py`): Open-Meteo weltweit, in Deutschland zusätzlich DWD-Regenradar und -Warnungen über Bright Sky, Luftqualität und Pollen, beliebige Orte und Adressen (Nominatim, Cache in `data/geocode.json`)
+- Rechnen per `calculate` (`core/calculator.py`): exakte Grundrechenarten und Prozente, Wurzeln, Logarithmen, Winkelfunktionen und Datumsrechnung (Tage bis, Wochentag, Datum in N Tagen), ohne `eval`
 - `set_speaker_volume`, `get_pi_temperature`, `end_conversation`
 - Core Memory (`data/core_memory.md`, append/replace), `search_archive` (Stichwortsuche)
 - MCP: `mcp.local` (SearXNG-Websuche, Firecrawl, Context7, Gmail, Google Calendar, Google Tasks, Mail, Fitbit/Google Health), `memory.local` (Basic Memory), HiFiBerry (Player, Queue, Library)
@@ -76,6 +77,9 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 ## P2 – Nützlich, mittlerer Aufwand
 
+- [x] **Wolfram Alpha** (Ergänzung zu `calculate`): Einheiten, Währungen mit aktuellen Kursen, Gleichungen und Rechnungen mit Fakten (Nährwerte, Physik, Astronomie).
+  - Umgesetzt im MCP-Gateway als Tool `wolfram_alpha` (LLM API), nicht in Jarvis selbst. Der Guide `prompts/guides/wolfram.md` (`requires: calculate, wolfram_alpha`) regelt die Aufteilung: Grundrechnen, Prozente und Datum bleiben bei `calculate`; Anfrage kurz, auf Englisch, `max_chars=1500`.
+  - Kostenlos 2.000 Anfragen pro Monat (nicht kommerziell), jede Anfrage ~1–3 s.
 - [ ] **Lange OpenClaw-Aufgaben asynchron.** `ask_openclaw` blockiert bis zur Antwort (Timeout `OPENCLAW_TIMEOUT`, 90 s). Für größere Recherchen besser: Jarvis gibt die Aufgabe per `POST /hooks/agent` ab (Gateway-Option `hooks.enabled`, eigener Hook-Token), sagt „läuft“ und beendet die Session. Das Ergebnis kommt per Messenger (`channel`/`to`) oder über die Remote-Mailbox (siehe unten) zurück, und Jarvis liest es vor.
 
 - [ ] **Workspace-Dateien und Lerner (wie OpenClaw/Hermes).** In Arbeit seit 2026-11-03 (Branch `feat/workspace-learner`). Kommt **vor** der Basic-Memory-Anbindung, weil die sich in diese Struktur einhängt.
@@ -129,8 +133,9 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 - [ ] **Maps-/POI-Suche** („Nächster Italiener?", „Hat der Baumarkt offen?").
   - v2: `services/google.py → perform_maps_search` (Gemini mit `googleMaps`-Grounding und `latLng` = Zuhause). Websuche ist in v3 über SearXNG abgedeckt, Maps nicht.
 
-- [ ] **Python-Code ausführen** (Berechnungen, API-Abfragen).
-  - v2: `services/system.py → run_local_python` (`exec` mit `requests`, `math`, `datetime`). Großteils durch Firecrawl und SearXNG ersetzt. Falls doch gewünscht: prüfen, ob das Live-Modell das eingebaute Code-Execution-Tool unterstützt, statt `exec` auf dem Pi.
+- [x] **Python-Code ausführen** (Berechnungen, API-Abfragen).
+  - v2: `services/system.py → run_local_python` (`exec` mit `requests`, `math`, `datetime`).
+  - Ersetzt durch den lokalen Rechner `calculate` (`core/calculator.py`, seit 2026-11-25): wertet Ausdrücke über `ast` aus statt mit `exec`, exakt mit Brüchen, plus Datumsrechnung. Das eingebaute Code-Execution-Tool unterstützt laut Google kein Live-Modell (auch `gemini-3.8-live` nicht, Stand 2026-11). API-Abfragen laufen über Firecrawl und SearXNG.
 
 - [ ] **Token- und Kosten-Logging pro Session.**
   - v2: `core/live.py` summiert `usage_metadata` und gibt am Ende geschätzte € aus.
@@ -197,8 +202,8 @@ Ziel: Andere können Jarvis ohne Terminal einrichten und bedienen. Läuft auf de
 - [x] **Phase 1 – MVP:** `web/server.py` (stdlib), Status, Log (Secrets maskiert), Einstellungen, Neustart (sofort oder sobald idle), Passwort beim ersten Besuch, Hinweis „Neustart nötig“ über einen Config-Fingerprint in der Statusdatei.
 - [x] **Phase 2:** Workspace-Editor (SOUL, AGENTS, USER, MEMORY, Skills, Verlauf, Undo, wartende Notizen), MCP-Server-Editor mit Verbindungstest, Verbindungstests für Gemini-Keys, HA und OpenClaw, Timer auf der Statusseite. Learner und Web-Editor teilen sich eine Dateisperre (`workspace.lock`), damit ein Learner-Lauf keine Web-Änderung überschreibt.
 - [x] **Phase 3:** Einrichtungsassistent beim ersten Start (Antworten laufen über den Learner im Jarvis-Prozess, nicht über einen zweiten Prozess), Jarvis wartet ohne Gemini-Key statt in einer Crash-Schleife zu laufen, `deploy/install.sh`, 18 Einstellungen gelten ab dem nächsten Gespräch ohne Neustart (Timing, Stimme, Name, Sprache, Modell, Mic-Gain, HA-Übersicht, Kontext). `.env.example` hat keine aktiven Platzhalter mehr.
-- [ ] Ideen für später: Oberfläche auf Deutsch (i18n), Text an Jarvis schicken statt sprechen (braucht einen Text-Eingang im laufenden Prozess), Lautstärke einstellen, HTTPS.
-
 - [x] **Dropdowns aus echten Quellen** (2026-11-25): Live-, Text- und Embedding-Modelle aus Geminis `models.list` (gefiltert nach unterstützten Methoden, Thinking-Modelle markiert), Wake-Word-Modelle aus den installierten Dateien plus eigene in `data/wakewords/`, OpenClaw-Agents aus `/v1/models`; Stimme und Sprache als Auswahl mit „Other…“. Neue Einstellung `JARVIS_THINKING` (Thinking-Level des Live-Modells, mit Fallback, wenn das Modell ein Level ablehnt). Standardmodell jetzt `gemini-3.8-live`. Nebenbei behoben: Archiv-Vektoren merken sich ihr Embedding-Modell, ein Modellwechsel mischt keine inkompatiblen Vektoren mehr; `hey_marvin` war installiert, aber nicht wählbar.
 - [ ] **google-genai auf dem Pi aktualisieren** (2.14 → ≥ 2.30): 2.14 verwirft `interaction_status`, deshalb wartet Jarvis nicht auf die Hintergrund-Antwort von Thinking-Modellen (`*-extended-thinking`). Thinking-Level selbst funktionieren mit 2.14.
 - [ ] **Extended Thinking erneut testen:** Am 2026-11-25 schlug das Hintergrund-Denken bei allen drei Keys serverseitig fehl (zweiter Turn: „Systemfehler“). Prüfen mit einem Gesprächstest: `GEMINI_LIVE_MODEL=gemini-3.8-live-extended-thinking JARVIS_THINKING=medium venv/bin/python -m tests.conversations.run <szenario>` (der Runner wartet auf Turns mit `IN_PROGRESS`).
+- [ ] Ideen für später: Oberfläche auf Deutsch (i18n), Text an Jarvis schicken statt sprechen (braucht einen Text-Eingang im laufenden Prozess), Lautstärke einstellen, HTTPS.
+

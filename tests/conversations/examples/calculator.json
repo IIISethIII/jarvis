@@ -1,0 +1,25 @@
+{
+  "name": "Calculations and date math go through the calculate tool",
+  "sessions": [
+    {
+      "turns": ["What is 19 percent VAT on 1249 euros?"],
+      "expect": {"tools": ["calculate"], "tool_args": [{"tool": "calculate", "match": "1249"}], "no_tools": ["remember"]},
+      "no_learn": true
+    },
+    {
+      "turns": ["We're three people and the bill is 87.40 euros. How much does each of us pay?"],
+      "expect": {"tools": ["calculate"], "tool_args": [{"tool": "calculate", "match": "87\\.4"}]},
+      "no_learn": true
+    },
+    {
+      "turns": ["How many days is it until Christmas Eve?"],
+      "expect": {"tools": ["calculate"], "tool_args": [{"tool": "calculate", "match": "days_between.*12-24"}]},
+      "no_learn": true
+    },
+    {
+      "turns": ["What weekday is March 14, 2027?"],
+      "expect": {"tools": ["calculate"], "answer_match": "sunday|sonntag"},
+      "no_learn": true
+    }
+  ]
+}

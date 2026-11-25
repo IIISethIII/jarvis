@@ -16,11 +16,12 @@ core/
   llm.py             GeminiLiveProvider: Live session, system prompt with HA context, tool calls, key rotation
   tools.py           local tools (call_ha_service, set_speaker_volume, get_weather, core memory, archive search, ...)
   weather.py         weather for any place: Open-Meteo, in Germany DWD radar and warnings (Bright Sky), no API key
+  calculator.py      exact calculator and date math for the tool calculate (ast whitelist, no eval)
   mcp.py             MCP client; servers in mcp_config.json
   audio.py           mic process, playback, ALSA mixer setup
   wake.py            openWakeWord detector
-  sfx.py             UI sounds (raw PCM)
   wakewords.py       finds wake word models: your own .onnx in data/wakewords/, then openWakeWord's
+  sfx.py             UI sounds (raw PCM)
   hardware.py        Voice Bonnet V2 RGB LED (mock fallback without smbus2)
   ha.py              Home Assistant REST wrapper
   memory.py          data/core_memory.md, data/archive.jsonl + embeddings for semantic search (not in git)
