@@ -161,6 +161,9 @@ async def _receive_turn(session, stubs, session_id, log):
             await session.send_tool_response(function_responses=responses)
             pending_answer = True
     answer = "".join(parts).strip()
+    if llm.is_placeholder(answer):
+        log(f"  (spoken placeholder {answer!r}, muted like in Jarvis)")
+        answer = ""
     log(f"  Jarvis: {answer or '(silent)'}")
     return answer, calls, ended
 

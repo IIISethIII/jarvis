@@ -277,7 +277,7 @@ FUNCTION_DECLARATIONS = [
     ),
     types.FunctionDeclaration(
         name="end_conversation",
-        description="Ends the conversation after a short pause. Only for a clear, complete goodbye ('Thanks', 'Bye', 'Stop', 'That's it'). Not for sentence fragments, questions, insults or swearing. When in doubt, don't call it: the session also ends after silence.",
+        description="Ends the conversation after a short pause. Only for a clear, complete goodbye ('Thanks', 'Bye', 'Stop', 'That's it') or when the user needs nothing ('Nothing', 'Never mind', 'Forget it'). Not for sentence fragments, questions, a plain 'No' to your question, insults or swearing. When in doubt, don't call it: the session also ends after silence.",
     ),
 ]
 

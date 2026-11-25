@@ -1,0 +1,15 @@
+{
+  "name": "\"Nothing\" after the wake word ends the session without an answer",
+  "sessions": [
+    {
+      "turns": ["Nothing."],
+      "expect": {"tools": ["end_conversation"], "silent": true},
+      "no_learn": true
+    },
+    {
+      "turns": ["Never mind."],
+      "expect": {"tools": ["end_conversation"], "silent": true},
+      "no_learn": true
+    }
+  ]
+}

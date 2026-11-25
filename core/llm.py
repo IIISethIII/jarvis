@@ -21,6 +21,21 @@ PRE_ANSWER_THINKING_S = 10  # thinking sound while waiting for Gemini's first an
 BACKGROUND_MAX_S = 90
 THINKING_LEVELS = ("minimal", "low", "medium", "high")
 
+# Gemini sometimes speaks a tag instead of staying silent: "<no speech>", often followed by "{pause}" (55 times
+# in three weeks of logs, prompt rules don't stop it). Real speech never starts with a bracket.
+PLACEHOLDER_START = ("<", "{", "[")
+# An answer's audio is held until its first transcript shows it isn't a placeholder. The transcript arrives in the
+# same message as the first audio chunk (measured 2026-11-25), so the hold costs no time; this caps it if it doesn't.
+HOLD_MAX_S = 0.5
+# Gemini stays silent on the first words after the wake word: close after this much quiet (see _arm_quick_close).
+# Longer than JARVIS_END_GRACE because "Hey Jarvis ... ehm" followed by a thinking pause also gets no answer.
+FIRST_WORDS_GRACE_S = 5.0
+
+
+def is_placeholder(text):
+    """True if Gemini's transcript is a spoken tag like "<no speech>{pause}" rather than speech."""
+    return text.lstrip().startswith(PLACEHOLDER_START)
+
 
 def thinking_fallback(error, level):
     """The model rejected the thinking setting at connect (WebSocket close 1007): the level to try instead
@@ -157,6 +172,9 @@ class GeminiLiveProvider:
             'end_call_id': None,  # its function call, answered only if the user keeps talking (_cancel_end)
             'thinking_at': None,  # when the thinking sound starts if Gemini hasn't answered yet (_start_thinking_if_due)
             'background_since': None,  # Gemini reasons in the background (turn_complete with IN_PROGRESS) since then
+            'answered': False,  # Gemini has spoken or called a tool in this session
+            'quick_close': None,  # Gemini stayed silent on the first words: close FIRST_WORDS_GRACE_S after that
+            **self._answer_gate(),
         }
         thinking_key = (self.model_name, self.thinking)
 
@@ -182,7 +200,7 @@ class GeminiLiveProvider:
                 
                 send_task = asyncio.create_task(self._send_audio_loop(audio_manager, session, state))
                 receive_task = asyncio.create_task(self._receive_audio_loop(audio_manager, session, hardware, state, sfx))
-                inactivity_task = asyncio.create_task(self._inactivity_loop(state, audio_manager, sfx))
+                inactivity_task = asyncio.create_task(self._inactivity_loop(state, audio_manager, sfx, hardware))
                 
                 done, pending = await asyncio.wait(
                     [send_task, receive_task, inactivity_task],
@@ -341,6 +359,9 @@ class GeminiLiveProvider:
             return None
         if state.get('end_requested') and idle > self.end_grace:
             return f"end_conversation, {idle:.1f}s quiet"
+        quick = state.get('quick_close')
+        if quick and time.time() - quick > FIRST_WORDS_GRACE_S:
+            return f"no answer to the first words, {time.time() - quick:.1f}s quiet"
         timeout = self.idle_timeout
         deadline = timeout
         heard_at = idle - (time.time() - state['last_user_speech'])  # seconds into the silence; < 0 = answered
@@ -394,11 +415,12 @@ class GeminiLiveProvider:
         last = f"last local speech {gap:.1f}s before END" if gap is not None else "no local speech"
         print(f"[VAD] Gemini segment {now - start:.1f}s: local speech {share:.0%} (max {peak:.2f}), {last}", flush=True)
 
-    async def _inactivity_loop(self, state, audio_manager, sfx=None):
+    async def _inactivity_loop(self, state, audio_manager, sfx=None, hardware=None):
         """Closes the connection once the user stopped talking to Jarvis (see _close_reason) or when cancelled (button).
-        Also starts the delayed thinking sound."""
+        Also starts the delayed thinking sound and plays held answer audio whose transcript is late."""
         while not state.get('is_closed', False):
             await asyncio.sleep(0.1)
+            self._release_answer_if_late(state, audio_manager, hardware)
             self._start_thinking_if_due(state, sfx)
             self._log_stuck_server_vad(state)
             if self.cancel_event.is_set():
@@ -488,6 +510,93 @@ class GeminiLiveProvider:
             id=state['end_call_id'], name='end_conversation',
             response={"result": "Not ended: the user kept talking. Continue the conversation."})])
 
+    @staticmethod
+    def _answer_gate():
+        """Per-turn state of the placeholder check (see _answer_audio), reset when a turn ends and at tool calls."""
+        return {
+            'answer_hold': True,  # audio is held until the turn's first transcript (or HOLD_MAX_S)
+            'answer_held': [],  # the held audio
+            'held_since': None,
+            'answer_checked': False,  # the turn's first transcript has been checked
+            'answer_muted': False,  # it was a placeholder: the turn's audio and transcript are dropped
+        }
+
+    def _answer_audio(self, state, audio_manager, hardware, data):
+        """Plays a chunk of Gemini's answer. The first ones are held until _answer_transcript has checked the turn."""
+        if state['answer_muted']:
+            return
+        if not state['answer_hold']:
+            self._play_answer(state, audio_manager, hardware, [data])
+            return
+        if state['held_since'] is None:
+            state['held_since'] = time.time()
+        state['answer_held'].append(data)
+        self._release_answer_if_late(state, audio_manager, hardware)
+
+    def _play_answer(self, state, audio_manager, hardware, chunks):
+        if state.get('is_thinking', False):
+            audio_manager.fade_out()  # the answer follows the short fade
+            state['is_thinking'] = False
+        if hardware:
+            hardware.set_color("blue", blink=False)  # Solid blue = speaking
+        state['last_activity'] = time.time()
+        state['turn_speech'] = state['answered'] = True
+        state['quick_close'] = None
+        for chunk in chunks:
+            audio_manager.play_chunk(chunk)
+
+    def _release_answer(self, state, audio_manager, hardware):
+        """Ends the hold and plays what was held."""
+        held = state['answer_held']
+        state.update(answer_hold=False, answer_held=[], held_since=None)
+        if held:
+            self._play_answer(state, audio_manager, hardware, held)
+
+    def _release_answer_if_late(self, state, audio_manager, hardware):
+        """No transcript within HOLD_MAX_S: play the held audio anyway. A late placeholder transcript still cuts it."""
+        since = state.get('held_since')
+        if state.get('answer_hold') and since and time.time() - since > HOLD_MAX_S:
+            print(f"[LLM] No transcript {HOLD_MAX_S}s after the answer's first audio, playing it unchecked.", flush=True)
+            self._release_answer(state, audio_manager, hardware)
+
+    def _answer_transcript(self, state, audio_manager, hardware, text):
+        """Checks the turn's first transcript for a spoken placeholder. Returns False when the text is to be dropped."""
+        if state['answer_muted']:
+            return False
+        if state['answer_checked']:
+            return True
+        state['answer_checked'] = True
+        if not is_placeholder(text):
+            self._release_answer(state, audio_manager, hardware)
+            return True
+        played = not state['answer_hold']
+        state.update(answer_muted=True, answer_hold=False, answer_held=[], held_since=None)
+        if played:  # the transcript came after HOLD_MAX_S: cut what is already playing
+            audio_manager.stop_playback()
+            state['turn_speech'] = False
+        if state.get('is_thinking'):
+            audio_manager.fade_out()
+            state['is_thinking'] = False
+        print(f"[LLM] Gemini spoke a placeholder ({text.strip()!r}) instead of staying silent: muted.", flush=True)
+        return False
+
+    def _end_answer_turn(self, state, audio_manager, hardware, play_held):
+        """A turn ended or a tool call came: audio still held had no transcript and plays (unless play_held is False),
+        and the next answer is checked anew."""
+        if play_held and state['answer_held'] and not state['answer_muted']:
+            self._release_answer(state, audio_manager, hardware)
+        state.update(self._answer_gate())
+
+    def _arm_quick_close(self, state):
+        """Gemini stayed silent on the first words of the session. The prompt makes it answer or ask back there,
+        so it judged them not meant for it (false wake word, TV) or they need no answer ("nothing"):
+        close after FIRST_WORDS_GRACE_S of quiet. More user speech disarms it (see _receive_audio_loop)."""
+        if (state.get('answered') or not state.get('last_user_speech') or state.get('end_requested')
+                or state.get('background_since') or state.get('quick_close')):
+            return
+        state['quick_close'] = time.time()
+        print(f"[LLM] No answer to the first words, closing after {FIRST_WORDS_GRACE_S:.0f}s of silence.", flush=True)
+
     async def _receive_audio_loop(self, audio_manager, session, hardware, state, sfx):
         """Receives 24kHz audio from Gemini and plays it through the speaker."""
         from core import memory, openclaw, tools
@@ -510,6 +619,7 @@ class GeminiLiveProvider:
                     activity_type = str(getattr(getattr(voice_activity, 'voice_activity_type', None), 'value', ''))
                     if activity_type == 'ACTIVITY_START':
                         state['speaking_since'] = state['server_vad_start'] = time.time()
+                        state['quick_close'] = None
                         if state['end_requested']:
                             await self._cancel_end(session, state)
                     elif activity_type == 'ACTIVITY_END':
@@ -540,34 +650,36 @@ class GeminiLiveProvider:
 
                         model_turn = getattr(server_content, 'model_turn', None)
                         if model_turn is not None:
-                            state['last_activity'] = time.time()
                             state['speaking_since'] = None  # Gemini answers, so the user turn is over
                             state['awaiting_answer'] = None
-                            hardware.set_color("blue", blink=False) # Solid blue = speaking
                             for part in model_turn.parts:
                                 if getattr(part, 'thought', False):
+                                    state['last_activity'] = time.time()
                                     if getattr(part, 'text', None):
                                         print(f"\n[Gemini Thought] {part.text}", flush=True)
                                 elif hasattr(part, 'inline_data') and part.inline_data:
                                     state['thinking_at'] = None
-                                    if state.get('is_thinking', False):
-                                        audio_manager.fade_out()  # the answer follows the short fade
-                                        state['is_thinking'] = False
-                                    audio_manager.play_chunk(part.inline_data.data)
-                                    state['turn_speech'] = True
+                                    # Held until the turn's transcript shows it isn't a spoken placeholder
+                                    self._answer_audio(state, audio_manager, hardware, part.inline_data.data)
                                 elif hasattr(part, 'text') and part.text:
+                                    state['last_activity'] = time.time()
                                     print(part.text, end="", flush=True)
 
                         output_transcription = getattr(server_content, 'output_transcription', None)
                         if output_transcription is not None and getattr(output_transcription, 'text', None):
-                            state['last_activity'] = time.time()
-                            state['jarvis_parts'].append(output_transcription.text)
-                            print(f"\n[Gemini Voice Transcript] {output_transcription.text}", flush=True)
+                            text = output_transcription.text
+                            if self._answer_transcript(state, audio_manager, hardware, text):
+                                state['last_activity'] = time.time()
+                                state['jarvis_parts'].append(text)
+                                print(f"\n[Gemini Voice Transcript] {text}", flush=True)
+                            else:
+                                print(f"[Gemini Placeholder] {text}", flush=True)
 
                         input_transcription = getattr(server_content, 'input_transcription', None)
                         if input_transcription is not None and getattr(input_transcription, 'text', None):
                             # Becomes activity once Gemini answers. Also covers models without voice_activity signals.
                             state['last_user_speech'] = state['awaiting_answer'] = time.time()
+                            state['quick_close'] = None
                             if state['end_requested']:
                                 await self._cancel_end(session, state)
                             hardware.set_color("blue", blink=True) # Pulsing blue = transcribing/thinking
@@ -578,12 +690,16 @@ class GeminiLiveProvider:
                             if not state.get('is_thinking') and not state.get('tool_running'):
                                 state['thinking_at'] = time.time() + self.thinking_delay  # see _start_thinking_if_due
 
+                        if interrupted or turn_complete:
+                            self._end_answer_turn(state, audio_manager, hardware, play_held=not interrupted)
+
                         if turn_complete and not state.get('turn_speech') and not state.get('tool_running'):
-                            # Gemini chose to stay silent: no thinking sound
+                            # Gemini chose to stay silent (or only spoke a placeholder): no thinking sound
                             state['thinking_at'] = None
                             if state.get('is_thinking'):
                                 audio_manager.fade_out()
                                 state['is_thinking'] = False
+                            self._arm_quick_close(state)
 
                         if interrupted or turn_complete:
                             state['turn_speech'] = False
@@ -599,8 +715,11 @@ class GeminiLiveProvider:
                             
                     tool_call = getattr(response, 'tool_call', None)
                     if tool_call is not None:
+                        self._end_answer_turn(state, audio_manager, hardware, play_held=True)  # a heads-up before it
                         state['last_activity'] = time.time()
                         state['awaiting_answer'] = None
+                        state['answered'] = True
+                        state['quick_close'] = None
                         # end_conversation alone stays silent: no thinking loop, no success sound, and a thinking
                         # loop already started after the user's last words fades out (no speech has played since)
                         ending = all(fc.name == 'end_conversation' for fc in tool_call.function_calls)
