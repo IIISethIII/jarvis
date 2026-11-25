@@ -8,7 +8,11 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 
+from core.vad import LocalVAD
+
 load_dotenv()
+
+SERVER_VAD_STUCK_S = 2.0  # Gemini reports user speech, but the local VAD heard none for this long (logged only)
 
 PRE_ANSWER_THINKING_S = 10  # thinking sound while waiting for Gemini's first answer (no tool call yet)
 
@@ -53,6 +57,8 @@ class GeminiLiveProvider:
         self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "20"))
         self.end_grace = float(os.getenv("JARVIS_END_GRACE", "2"))
         self.thinking_delay = float(os.getenv("JARVIS_THINKING_DELAY", "0.8"))
+        self.answer_wait = float(os.getenv("JARVIS_ANSWER_WAIT", "8"))
+        self.local_vad = LocalVAD()
 
     def request_cancel(self):
         """Ends the running session (thread-safe). Does nothing when idle."""
@@ -71,9 +77,11 @@ class GeminiLiveProvider:
         """Connects to the Live API and handles bidirectional audio streaming."""
         self.cancel_event.clear()
         self.is_active = True
+        self.local_vad.start_session()
         try:
             await self._connect(audio_manager, hardware, dynamic_tools, mock_text, sfx)
         finally:
+            self.local_vad.end_session()
             if self.cancel_event.is_set():
                 # Drop speech that arrived between the button press and the session closing
                 audio_manager.stop_playback()
@@ -101,6 +109,9 @@ class GeminiLiveProvider:
             'session_id': now_dt.strftime("%Y%m%d-%H%M%S"),
             'last_user_speech': 0.0,  # end of the last user speech; only counts as activity once Gemini answers
             'speaking_since': None,  # server VAD: start of the user speech in progress
+            'server_vad_start': None,  # same, but kept until ACTIVITY_END to compare with the local VAD
+            'vad_stuck_logged': None,  # server speech start already reported as stuck (logged once per segment)
+            'awaiting_answer': None,  # the user stopped speaking and Gemini hasn't reacted yet (see _idle_seconds)
             'end_requested': False,  # end_conversation was called: close after end_grace seconds of silence
             'end_call_id': None,  # its function call, answered only if the user keeps talking (_cancel_end)
             'thinking_at': None,  # when the thinking sound starts if Gemini hasn't answered yet (_start_thinking_if_due)
@@ -214,11 +225,21 @@ class GeminiLiveProvider:
         # Only speech counts: the looped thinking SFX (~38 s queued) must not keep the session open.
         if audio_manager.is_playing or state.get('tool_running', False):
             return 0.0
+        now = time.time()
         # Server VAD says the user is speaking. Endless "speech" is background audio (music, TV), so it stops counting.
         speaking_since = state.get('speaking_since')
-        if speaking_since and time.time() - speaking_since < self.max_speech:
+        if speaking_since and now - speaking_since < self.max_speech:
             return 0.0
-        return time.time() - max(state['last_activity'], audio_manager.last_speech_time)
+        idle = now - max(state['last_activity'], audio_manager.last_speech_time)
+        # The user just stopped speaking: wait for Gemini to answer, call a tool or decide to stay silent
+        # (turn_complete) before judging the silence. The pause before the question and the question itself
+        # count as idle time, so a long question after a pause used to close the session before the answer came.
+        # The cap keeps background speech that Gemini never reacts to from holding the session.
+        awaiting = state.get('awaiting_answer')
+        if awaiting and now - awaiting < self.answer_wait:
+            if idle < self.idle_timeout + self.speech_grace + self.max_speech + self.answer_wait:
+                return 0.0
+        return idle
 
     def _close_reason(self, state, audio_manager):
         """Returns why the session should end now, or None.
@@ -241,6 +262,8 @@ class GeminiLiveProvider:
         if idle <= deadline:
             return None
         unanswered = ", user speech unanswered" if heard_at > 0 else ""
+        if state.get('awaiting_answer'):
+            unanswered = f", no reaction {time.time() - state['awaiting_answer']:.0f}s after the user spoke"
         if state.get('speaking_since'):
             unanswered = f", speech running > {self.max_speech:.0f}s (background audio?)"
         return f"{idle:.0f}s without activity (timeout {timeout:.0f}s{unanswered})"
@@ -258,12 +281,38 @@ class GeminiLiveProvider:
             if sfx:
                 sfx.play_thinking(after_speech=True, seconds=PRE_ANSWER_THINKING_S, fade_in=True)
 
+    def _log_stuck_server_vad(self, state):
+        """Logs once per segment when Gemini reports user speech the local VAD doesn't hear (logging only for now)."""
+        since = state.get('speaking_since')
+        if not since or state.get('vad_stuck_logged') == since or time.time() - since < SERVER_VAD_STUCK_S:
+            return
+        silence = self.local_vad.silence(since)
+        if silence is not None and silence > SERVER_VAD_STUCK_S:
+            state['vad_stuck_logged'] = since
+            print(f"[VAD] Gemini reports speech for {time.time() - since:.1f}s, "
+                  f"but no local speech for {silence:.1f}s (server VAD stuck?)", flush=True)
+
+    def _log_server_segment(self, state):
+        """At Gemini's ACTIVITY_END: what the local VAD heard during the same segment."""
+        start = state.get('server_vad_start')
+        state['server_vad_start'] = None
+        if not start:
+            return
+        now = time.time()
+        local = self.local_vad.window(start, now)
+        if local is None:
+            return
+        share, peak, gap = local
+        last = f"last local speech {gap:.1f}s before END" if gap is not None else "no local speech"
+        print(f"[VAD] Gemini segment {now - start:.1f}s: local speech {share:.0%} (max {peak:.2f}), {last}", flush=True)
+
     async def _inactivity_loop(self, state, audio_manager, sfx=None):
         """Closes the connection once the user stopped talking to Jarvis (see _close_reason) or when cancelled (button).
         Also starts the delayed thinking sound."""
         while not state.get('is_closed', False):
             await asyncio.sleep(0.1)
             self._start_thinking_if_due(state, sfx)
+            self._log_stuck_server_vad(state)
             if self.cancel_event.is_set():
                 print("\n[LLM] Session cancelled by button.", flush=True)
                 return
@@ -304,7 +353,8 @@ class GeminiLiveProvider:
                     # Apply digital gain (4x) to help Gemini hear far-field speech (3m away)
                     boosted_array = np.clip(audio_array.astype(np.float32) * 4.0, -32768, 32767).astype(np.int16)
                     pcm_data = boosted_array.tobytes()
-                    
+                    self.local_vad.feed(pcm_data)  # same signal Gemini gets
+
                     if len(boosted_array) > 0:
                         rms = np.sqrt(np.mean(np.square(boosted_array.astype(np.float32))))
                             
@@ -371,12 +421,13 @@ class GeminiLiveProvider:
                     voice_activity = getattr(response, 'voice_activity', None)
                     activity_type = str(getattr(getattr(voice_activity, 'voice_activity_type', None), 'value', ''))
                     if activity_type == 'ACTIVITY_START':
-                        state['speaking_since'] = time.time()
+                        state['speaking_since'] = state['server_vad_start'] = time.time()
                         if state['end_requested']:
                             await self._cancel_end(session, state)
                     elif activity_type == 'ACTIVITY_END':
                         state['speaking_since'] = None
-                        state['last_user_speech'] = time.time()
+                        state['last_user_speech'] = state['awaiting_answer'] = time.time()
+                        self._log_server_segment(state)
                         if state['thinking_at']:
                             state['thinking_at'] = time.time() + self.thinking_delay  # count from the end of speech
 
@@ -401,6 +452,7 @@ class GeminiLiveProvider:
                         if model_turn is not None:
                             state['last_activity'] = time.time()
                             state['speaking_since'] = None  # Gemini answers, so the user turn is over
+                            state['awaiting_answer'] = None
                             hardware.set_color("blue", blink=False) # Solid blue = speaking
                             for part in model_turn.parts:
                                 if getattr(part, 'thought', False):
@@ -424,7 +476,8 @@ class GeminiLiveProvider:
 
                         input_transcription = getattr(server_content, 'input_transcription', None)
                         if input_transcription is not None and getattr(input_transcription, 'text', None):
-                            state['last_user_speech'] = time.time()  # becomes activity once Gemini answers
+                            # Becomes activity once Gemini answers. Also covers models without voice_activity signals.
+                            state['last_user_speech'] = state['awaiting_answer'] = time.time()
                             if state['end_requested']:
                                 await self._cancel_end(session, state)
                             hardware.set_color("blue", blink=True) # Pulsing blue = transcribing/thinking
@@ -444,6 +497,7 @@ class GeminiLiveProvider:
 
                         if interrupted or turn_complete:
                             state['turn_speech'] = False
+                            state['awaiting_answer'] = None  # Gemini reacted (also when it chose to stay silent)
 
                         if turn_complete:
                             # A turn that ends in a tool call has no answer yet: keep the user text until the answer is complete
@@ -455,6 +509,7 @@ class GeminiLiveProvider:
                     tool_call = getattr(response, 'tool_call', None)
                     if tool_call is not None:
                         state['last_activity'] = time.time()
+                        state['awaiting_answer'] = None
                         # end_conversation alone stays silent: no thinking loop, no success sound, and a thinking
                         # loop already started after the user's last words fades out (no speech has played since)
                         ending = all(fc.name == 'end_conversation' for fc in tool_call.function_calls)
