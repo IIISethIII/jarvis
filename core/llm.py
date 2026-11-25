@@ -54,7 +54,7 @@ class GeminiLiveProvider:
         # Session end: seconds of silence after Jarvis spoke, see _close_reason
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
-        self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "20"))
+        self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "45"))
         self.end_grace = float(os.getenv("JARVIS_END_GRACE", "2"))
         self.thinking_delay = float(os.getenv("JARVIS_THINKING_DELAY", "0.8"))
         self.answer_wait = float(os.getenv("JARVIS_ANSWER_WAIT", "8"))
@@ -162,8 +162,9 @@ class GeminiLiveProvider:
         # Attempt connection with automatic fallback across configured API keys
         max_attempts = len(self.api_keys)
         last_error = None
-        # Must stay above the longest regular idle period (timeout + speech grace)
-        watchdog_s = max(30.0, self.idle_timeout + self.speech_grace + 10.0)
+        # Must stay above the longest regular idle period: when max speech or the answer wait run out, the idle
+        # time jumps to everything since Jarvis last spoke, and _inactivity_loop should close that gracefully
+        watchdog_s = max(30.0, self.idle_timeout + self.speech_grace + self.max_speech + self.answer_wait + 10.0)
 
         for attempt in range(max_attempts):
             try:
