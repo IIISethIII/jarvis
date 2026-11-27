@@ -36,7 +36,7 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
 
 - [x] **Prompt verweist auf ein Tool, das es nicht gibt.** (2026-10-30: Regel nutzt jetzt `music_play` / `music_control` aus dem Gateway.) Der System-Prompt in `core/llm.py` sagt bei „Musik": `category='station', name='Library Radio'`. Ein Tool mit diesen Parametern gibt es in v3 aber nicht (siehe P1 „Musik gezielt abspielen"). Entweder das Tool portieren oder die Prompt-Regel anpassen.
 
-- [x] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet, am 2026-11-03 nach dem mitten im Satz abgeschnittenen „Perfekt. Sonst noch was zu“. Umgesetzt 2026-11-04: Die Regel in `prompts/core.md` und die Tool-Beschreibung erlauben das Tool nur noch bei einem klaren, vollständigen Abschluss. Außerdem schließt die Session erst nach `JARVIS_END_GRACE` (2 s) Stille, und spricht der User in dieser Zeit weiter, wird das Beenden abgebrochen.
+- [x] **`end_conversation` beendet zu leicht.** Im Test hat Gemini die Session nach einem falsch transkribierten Fragment („ist") beendet, am 2026-11-03 nach dem mitten im Satz abgeschnittenen „Perfekt. Sonst noch was zu“. Umgesetzt 2026-11-04: Die Regel in `prompts/core.md` und die Tool-Beschreibung erlauben das Tool nur noch bei einem klaren, vollständigen Abschluss. Außerdem schließt die Session erst nach `JARVIS_END_GRACE` Stille (bis 2026-11-27 2 s, seitdem Standard 0 s: sofort nach der Verabschiedung), und spricht der User in dieser Zeit weiter, wird das Beenden abgebrochen.
 
 - [x] **Hardware-Button verdrahtet.** Ein Druck während einer Session bricht sie ab (Wiedergabe stoppt, LED kurz rot). Im Idle blinkt die LED kurz in einer zufälligen Farbe. Umgesetzt über `GeminiLiveProvider.request_cancel()` (`cancel_event`, geprüft in `_inactivity_loop` bzw. beim Verbindungsaufbau). Pin per `JARVIS_BUTTON_PIN`, Backend `gpiozero` + `lgpio` (RPi.GPIO kann auf Kernel 6.12 keine Flanken erkennen). Wenn es Timer gibt, soll der Button auch einen klingelnden Alarm stoppen (siehe P1).
 
@@ -65,9 +65,12 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - v2: `core/live.py → get_dynamic_system_instruction` hat die letzten 6 Turns in den Prompt gepackt, wenn die letzte Aktivität weniger als 15 min her war.
   - Für v3: Transkripte (siehe P0-Archiv-Fix) im RAM halten und beim nächsten `connect()` als Abschnitt „LETZTE KONVERSATION" anhängen. Alternativ die Session-Resumption der Live-API anschauen.
 
-- [ ] **Inhalte aufs Handy schicken (`send_to_phone`).**
+- [x] **Inhalte aufs Handy schicken (`send_to_phone`) über Telegram oder HA-Push.** Umgesetzt 2026-11-27 (Branch `feat/notify-events`), auf dem Pi getestet (Rezept per Sprache → Telegram).
   - v2: `services/ha.py → send_notification` (`notify.notify` mit `clickAction`-URL, Bild, Priorität `high` → `channel: alarm_stream`) plus Prompt-Regeln: lange Antworten (Rezepte, Listen, Code), Bilder und Routen **proaktiv** aufs Handy schicken, ohne vorher zu fragen.
   - Theoretisch geht das auch über `call_ha_service`. Ein eigenes Tool mit klaren Parametern ist für das Live-Modell aber deutlich zuverlässiger.
+  - Ein Kanal für alles, was Jarvis dem User schreibt (`core/notify.py`, nur stdlib, damit auch die Weboberfläche es nutzt): **Telegram-Bot**, sonst ein HA-Notify-Dienst. Ohne beides gibt es das Tool nicht.
+  - Telegram in der Weboberfläche verbinden: Bot-Token von @BotFather eintragen, „Verbinden“ zeigt einen Link `t.me/<bot>?start=<code>`, nach „Start“ in Telegram speichert die Seite die Chat-ID. Nur dieser Chat bekommt Nachrichten. Ein eigener Bot für Jarvis, weil nur ein Programm die Nachrichten eines Bots abholen kann.
+  - Vorerst **nur senden**. Später: Nachrichten an den Bot verarbeitet ein Textmodell auf Jarvis (nicht die Live-Session), z. B. Fragen beantworten oder etwas im Raum ansagen. Dann holt Jarvis die Updates ab, und das Verbinden läuft über ihn statt über die Weboberfläche.
 
 - [x] **Musik gezielt abspielen (Plex/Plexamp).** Umgesetzt 2026-10-30 im MCP-Gateway (`music_play`, `music_control`): Plex-Suche + Plexamp direkt, Spotify als Fallback, Stationen wie Library Radio, „Spiel Musik" setzt innerhalb von 30 min mit dem nächsten Song fort, sonst Library Radio. Offen für Portabilität: Repo-Nutzer ohne dieses Gateway brauchen eine Alternative (z. B. Music Assistant); die Prompt-Regel gehört später in die Persona-Datei.
   - v2: `services/ha.py → execute_play_music` (Kategorien artist/album/playlist/track/station, `plex://`-Content-IDs, „Library Radio" = feste Station-URL `plex://…/library/sections/6/stations/1`). Ohne Angabe wird automatisch der Plexamp-Player gewählt.
@@ -96,7 +99,18 @@ Quelle für die Portierung ist **jarvis_v2** (lokal = `~/jarvis` auf dem Pi, ink
   - **Fester Kontext:** Optional eine Hub-Note (zum Beispiel „Jarvis-Kontext") in den Prompt aufnehmen. Im Hintergrund cachen und regelmäßig aktualisieren, damit der Sessionstart nicht auf das MCP wartet.
   - **Schreiben:** Keine Rohgespräche, die bleiben im lokalen Archiv. Stattdessen einmal nachts aus `data/archive.jsonl` eine Tageszusammenfassung erzeugen und als Log-Note nach den Basic-Memory-Konventionen ablegen (vorher „README - Conventions" lesen, Ziel `logs/YYYY-MM-daily-digest`). Das läuft besser auf einem Server als auf dem Pi, zum Beispiel auf dem Dev-Rechner, auf den `data/` ohnehin synchronisiert wird.
 
-- [ ] **Remote-Mailbox (Text an Jarvis aus Home Assistant).**
+- [ ] **Ereignis-Sessions: Home Assistant startet ein Gespräch** (gebaut 2026-11-27, Branch `feat/notify-events`; offen: Praxistest mit echten Besuchern). Ersetzt die Remote-Mailbox unten.
+  - HA feuert das Event `jarvis_trigger` (`id`, `prompt`, optional Idle-Timeout und Workspace-Datei mit Regeln). Jarvis hört per WebSocket auf HA mit (`core/ha_events.py`, `websockets` kommt schon mit google-genai), kein Polling. Ohne HA oder mit `JARVIS_EVENTS=0` aus.
+  - Jarvis startet eine Session wie beim Wake Word, aber mit Gong, eigener LED-Farbe, und **spricht zuerst**. Läuft gerade eine Session oder klingelt ein Alarm, wartet das Event höchstens `JARVIS_EVENT_MAX_AGE` s.
+  - **Eingeschränkt:** nur die Tools `report_event_result` und `end_conversation`, und im Prompt kein `MEMORY`/`USER`, keine HA-Übersicht, keine letzten Gespräche. Sonst könnte ein Besucher Geräte schalten oder fragen, was Jarvis über den User weiß.
+  - **Codewort des Besitzers** (`JARVIS_OWNER_CODEWORD`, Secret in `.env`): steht nie im Prompt, Gemini gibt das Gehörte an ein Tool, der Code vergleicht. Richtig → kurzer Gruß, keine Meldung. Falsch → kommt in die Meldung. Höchstens 3 Versuche pro Session.
+  - Am Ende schickt Jarvis die Meldung über `core/notify.py` (mit dem Wortlaut der Person, damit niemand Jarvis eine beschönigte Meldung diktieren kann) und feuert `jarvis_trigger_result` (`id`, `answered`, `message`, `transcript`) zurück an HA. Ohne Antwort: Meldung „niemand hat geantwortet“.
+  - Hausregeln für Besucher (z. B. bei Schlüsseln nach der Rückgabe fragen) liegen im Workspace, nicht im Repo, und kommen nur in diese Sessions.
+  - Wiederholung: Das Ergebnis der letzten Event-Session (< 30 min) kommt in den Prompt, damit Jarvis beim zweiten Mal „wieder da?“ sagt statt sich neu vorzustellen.
+  - **Blueprint „Wer ist da?“** im Repo (importierbar per GitHub-URL): Präsenzsensor(en) aus → an, alle „Zuhause-Signale“ (Person, Tracker, binary_sensor) seit mindestens N min weg, nach X s noch einmal prüfen. Ruhezeit optional (Standard aus), kein Cooldown, Modus `single`.
+  - Gemessen 2026-11-27 an einem mmWave-Sensor (LD2410): 10 neue Erkennungen in 7 Tagen bei Abwesenheit, davon 2× der User selbst beim Heimkommen vor dem GPS-Update. Läuft der Standort über VPN und das VPN ist aus, meldet HA stundenlang „weg“.
+
+- [ ] ~~**Remote-Mailbox (Text an Jarvis aus Home Assistant).**~~ Wird durch Ereignis-Sessions (oben) und später Telegram-Nachrichten ersetzt.
   - v2: `main.py` fragt alle 1,5 s `input_text.jarvis_chat` ab, leert das Feld, verarbeitet den Text und spricht die Antwort.
   - In v3 sind die Helfer schon da (`core/ha.py → read_mailbox`, `clear_mailbox`), es fehlt nur die Schleife. Den Text kann man wie im `--test`-Modus per `send_client_content` in eine Live-Session injizieren.
   - Offen: Soll die Antwort gesprochen werden oder nur stumm erscheinen? v2 hatte dafür `<SILENT>`. Wenn der User nicht zu Hause ist, eher per Push aufs Handy.

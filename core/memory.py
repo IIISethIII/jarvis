@@ -36,9 +36,10 @@ def tool_entry(name, args, result):
     return {"name": name, "args": args, "result": str(result)[:TOOL_RESULT_CHARS]}
 
 
-def log_interaction(user_text: str, assistant_text: str, session_id: str = "", tools: list = None):
+def log_interaction(user_text: str, assistant_text: str, session_id: str = "", tools: list = None, source: str = None):
     """Appends a conversation turn to the archive.jsonl log. session_id groups the turns of one wake-word session;
-    tools are the turn's tool calls (see tool_entry)."""
+    tools are the turn's tool calls (see tool_entry). source "event": Home Assistant started the session and
+    Jarvis talked to whoever was in the room, not necessarily the user (core/events.py)."""
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     entry = {
         "timestamp": now_str,
@@ -49,6 +50,8 @@ def log_interaction(user_text: str, assistant_text: str, session_id: str = "", t
         entry["session"] = session_id
     if tools:
         entry["tools"] = tools
+    if source:
+        entry["source"] = source
     try:
         with open(ARCHIVE_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -73,8 +76,12 @@ def _entry_hash(entry: dict) -> str:
     raw = f"{entry.get('timestamp', '')}|{entry.get('session', '')}|{entry.get('user', '')}|{entry.get('assistant', '')}"
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
+def _speaker(entry: dict) -> str:
+    """Who said the 'user' part: in event sessions someone in the room (see log_interaction)."""
+    return "Person in the room (automation)" if entry.get("source") == "event" else "User"
+
 def _entry_text(entry: dict) -> str:
-    return f"User: {entry.get('user', '')}\nJarvis: {entry.get('assistant', '')}"
+    return f"{_speaker(entry)}: {entry.get('user', '')}\nJarvis: {entry.get('assistant', '')}"
 
 def _embed_model() -> str:
     return os.getenv("JARVIS_EMBED_MODEL", EMBED_MODEL)
@@ -231,13 +238,16 @@ def get_recent_conversations(max_sessions: int = None, max_age_min: int = None) 
         if (now - last).total_seconds() > max_age_min * 60:
             continue
         rows = []
+        event = turns[0].get("source") == "event"
+        speaker = "Person in the room" if event else "User"
         for t in turns:
             if t.get("user"):
-                rows.append(f"User: {t['user']}")
+                rows.append(f"{speaker}: {t['user']}")
             if t.get("assistant"):
                 rows.append(f"Jarvis: {t['assistant']}")
         if rows:
-            blocks.append(f"[{turns[0]['timestamp']}]\n" + "\n".join(rows))
+            note = " (started by an automation: you spoke to someone in the room, not to the user)" if event else ""
+            blocks.append(f"[{turns[0]['timestamp']}]{note}\n" + "\n".join(rows))
     return "\n\n".join(blocks)
 
 def search_archive(query: str, max_results: int = 8) -> str:
@@ -283,7 +293,7 @@ def search_archive(query: str, max_results: int = 8) -> str:
         scored.sort(key=lambda x: -x[0])
 
     results = [
-        f"[{e.get('timestamp', '')}] User: {e.get('user', '')}\nJarvis: {e.get('assistant', '')}"
+        f"[{e.get('timestamp', '')}] {_entry_text(e)}"
         for _, e in scored[:max_results]
     ]
     if not results:

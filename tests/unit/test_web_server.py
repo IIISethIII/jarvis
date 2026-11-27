@@ -372,6 +372,19 @@ class WebServerTest(unittest.TestCase):
         gemini = self.request("POST", "/api/test", {"what": "gemini", "values": {"GEMINI_KEYS": ""}})
         self.assertEqual(gemini[0], 200)
 
+    def test_telegram_routes_are_protected(self):
+        self.assertEqual(self.request("POST", "/api/telegram/check", {})[0], 401, "login first")
+        self.setup_password()
+        self.assertEqual(self.request("POST", "/api/telegram/check", {}, csrf=False)[0], 403)
+        status, data, _ = self.request("POST", "/api/telegram/check", {})
+        self.assertEqual(status, 409, "nothing to check before 'Connect'")
+        status, data, _ = self.request("POST", "/api/telegram/pair", {"values": {}})
+        self.assertEqual(status, 400)
+        self.assertIn("token first", data["error"])
+        messages = next(g for g in self.request("GET", "/api/settings")[1]["groups"] if g["id"] == "messages")
+        token = next(s for s in messages["settings"] if s["key"] == "TELEGRAM_BOT_TOKEN")
+        self.assertEqual((token["kind"], token["applies"]), ("secret", "session"))
+
     def test_setup_flow(self):
         self.setup_password()
         session = self.request("GET", "/api/session")[1]

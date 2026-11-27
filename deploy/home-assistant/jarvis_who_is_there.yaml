@@ -1,0 +1,155 @@
+blueprint:
+  name: "Jarvis: Who is there?"
+  description: >-
+    When a presence sensor notices someone while everybody is away, Jarvis asks who it is
+    and sends you the answer as a message (Telegram or a phone notification, set up on
+    Jarvis' web interface). Say your code word and Jarvis knows it's you.
+    Needs Jarvis (github.com/IIISethIII/jarvis) with Home Assistant access and with the
+    events setting on: it listens for the event jarvis_trigger. Jarvis should stand in the
+    same room as the sensor.
+  domain: automation
+  source_url: https://github.com/IIISethIII/jarvis/blob/main/deploy/home-assistant/jarvis_who_is_there.yaml
+  homeassistant:
+    min_version: "2024.10.0"
+  input:
+    presence_sensors:
+      name: Presence sensors
+      description: Motion or presence sensors in the room where Jarvis stands. The check starts when one of them turns on.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: binary_sensor
+    home_entities:
+      name: Who lives here
+      description: >-
+        People, phones or other signals that mean someone is home. If any of them is
+        'home' or 'on', nothing happens.
+      selector:
+        entity:
+          multiple: true
+          filter:
+            - domain: [person, device_tracker, binary_sensor, input_boolean]
+    away_minutes:
+      name: Away for at least
+      description: >-
+        Minutes everybody must have been away. Skips the first minutes after you left,
+        while the sensor may still see you.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 240
+          unit_of_measurement: min
+          mode: box
+    confirm_seconds:
+      name: Check again after
+      description: >-
+        Wait this long, then check again that nobody came home. Catches you coming home
+        before your phone reports it.
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 600
+          unit_of_measurement: s
+          mode: box
+    owner:
+      name: Your name
+      description: How Jarvis calls you towards the visitor and in the message.
+      default: ""
+      selector:
+        text: {}
+    task:
+      name: Task for Jarvis
+      description: What Jarvis says and asks. {owner} becomes your name. Jarvis speaks its own language setting.
+      default: >-
+        Someone is in the room while {owner} is away. Introduce yourself in one sentence and
+        ask who they are and what they are here for. Say that you only ask so you can tell
+        {owner}. Be friendly, not suspicious. If they don't want to say, accept it.
+      selector:
+        text:
+          multiline: true
+    skills:
+      name: Extra rules (Jarvis skill)
+      description: >-
+        Optional: name of a skill in Jarvis' workspace with house rules for this check, e.g.
+        what to ask someone who fetches a key (web interface -> Workspace -> Skills).
+        Several names separated by commas.
+      default: ""
+      selector:
+        text: {}
+    title:
+      name: Message title
+      default: Someone is in your room
+      selector:
+        text: {}
+    silence_message:
+      name: Message when nobody answers
+      description: Empty = no message when nobody answers.
+      default: Someone was detected in the room, but nobody answered Jarvis.
+      selector:
+        text: {}
+    quiet_start:
+      name: Quiet hours from
+      description: Jarvis doesn't speak between these times. Same start and end = no quiet hours.
+      default: "00:00:00"
+      selector:
+        time: {}
+    quiet_end:
+      name: Quiet hours until
+      default: "00:00:00"
+      selector:
+        time: {}
+
+mode: single
+max_exceeded: silent
+
+triggers:
+  - trigger: state
+    entity_id: !input presence_sensors
+    from: "off"
+    to: "on"
+
+variables:
+  home_entities: !input home_entities
+  away_minutes: !input away_minutes
+  owner: !input owner
+  task: !input task
+  skills: !input skills
+  quiet_start: !input quiet_start
+  quiet_end: !input quiet_end
+
+conditions:
+  - alias: Everybody away long enough
+    condition: template
+    value_template: >-
+      {% set ents = expand(home_entities) %}
+      {% set since = now() - timedelta(minutes=away_minutes | float(0)) %}
+      {{ ents | selectattr('state', 'in', ['home', 'on']) | list | count == 0
+         and ents | selectattr('last_changed', '>', since) | list | count == 0 }}
+  - alias: Not in the quiet hours
+    condition: template
+    value_template: >-
+      {% set s, e, t = quiet_start, quiet_end, now().strftime('%H:%M:%S') %}
+      {{ s == e or not ((s < e and s <= t < e) or (s > e and (t >= s or t < e))) }}
+
+actions:
+  - delay:
+      seconds: !input confirm_seconds
+  - alias: Still nobody home
+    condition: not
+    conditions:
+      - condition: state
+        entity_id: !input home_entities
+        match: any
+        state: ["home", "on"]
+  - event: jarvis_trigger
+    event_data:
+      id: "{{ now().strftime('%Y%m%d-%H%M%S') }}"
+      kind: who_is_there
+      owner: "{{ owner }}"
+      title: !input title
+      prompt: "{{ task | replace('{owner}', owner if owner else 'the owner') }}"
+      skills: "{{ skills }}"
+      silence_message: !input silence_message

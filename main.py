@@ -59,6 +59,7 @@ from core.mcp import mcp_client  # noqa: E402
 from core.learner import scheduler as learner  # noqa: E402
 from core.llm import GeminiLiveProvider  # noqa: E402
 from core.timers import timer_manager  # noqa: E402
+from core import events, ha_events  # noqa: E402
 
 
 def main():
@@ -159,7 +160,47 @@ def main():
         
         from core.sfx import SFXManager
         sfx = SFXManager(audio_manager)
-        
+        # Home Assistant can start conversations (event 'jarvis_trigger', see core/events.py)
+        ha_events.start()
+
+        def run_session(event=None):
+            """One conversation, started by the wake word or by an event from Home Assistant."""
+            hardware.set_color("white" if event else "purple", blink=False)
+            sfx.play("wake")
+            reload_session_settings()
+            status.update(state="session")
+            try:
+                asyncio.run(llm_provider.connect(audio_manager, hardware, dynamic_tools, sfx=sfx, event=event))
+            except Exception as e:
+                print(f"Error in LLM loop: {e}")
+                status.update(error=f"Session: {e}")
+                sfx.play("error")
+            status.update(state="idle")
+            learner.session_ended()
+            sfx.play("sleep")
+            hardware.turn_off()
+            audio_manager.flush()
+            wake_detector.reset()
+            print("\n[Idle] Listening for 'Hey Jarvis'...")
+
+        def handle_trigger(received, data):
+            """Starts the conversation an automation asked for, or tells Home Assistant why not."""
+            max_age = float(os.getenv("JARVIS_EVENT_MAX_AGE", "120"))
+            if time.time() - received > max_age:
+                events.reject(data, "expired")  # waited too long behind a conversation
+                return
+            if timer_manager.is_ringing:
+                events.reject(data, "busy")
+                return
+            try:
+                event = events.Event(data, received)
+            except ValueError as e:
+                print(f"[Event] Invalid trigger: {e}", flush=True)
+                events.reject(data, "invalid")
+                return
+            print(f"\n🚨 Event '{event.kind}' from Home Assistant!", flush=True)
+            run_session(event)
+
         hardware.turn_off()
         sfx.play("success")
         
@@ -175,7 +216,14 @@ def main():
 
             while True:
                 chunk = audio_manager.get_audio_chunk(timeout=1.0)
-                
+
+                trigger = ha_events.take()
+                if trigger:
+                    handle_trigger(*trigger)
+                    chunk_time_start = time.time()
+                    chunk_count = silence_count = mic_fail_count = 0
+                    continue
+
                 if chunk is None:
                     if getattr(audio_manager, 'is_playing', False):
                         mic_fail_count = 0
@@ -245,27 +293,7 @@ def main():
                         wake_detector.reset()
                         continue
                     print("\n🚨 Wake Word Detected!", flush=True)
-                    hardware.set_color("purple", blink=False)
-                    sfx.play("wake")
-                    reload_session_settings()
-                    status.update(state="session")
-                    
-                    try:
-                        # Passing sfx to llm_provider
-                        asyncio.run(llm_provider.connect(audio_manager, hardware, dynamic_tools, sfx=sfx))
-                    except Exception as e:
-                        print(f"Error in LLM loop: {e}")
-                        status.update(error=f"Session: {e}")
-                        sfx.play("error")
-                    status.update(state="idle")
-                    learner.session_ended()
-                    
-                    sfx.play("sleep")
-                    hardware.turn_off()
-                    audio_manager.flush()
-                    wake_detector.reset()
-                        
-                    print("\n[Idle] Listening for 'Hey Jarvis'...")
+                    run_session()
                     
         except KeyboardInterrupt:
             pass

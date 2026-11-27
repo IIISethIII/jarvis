@@ -33,6 +33,11 @@ GROUPS = [
     ("gemini", "Gemini", "API keys and models. Free keys come from aistudio.google.com."),
     ("home_assistant", "Home Assistant", "Optional. Without a URL and token the smart home tools are off."),
     ("openclaw", "OpenClaw", "Optional. Jarvis hands questions it can't answer to an OpenClaw agent."),
+    ("messages", "Messages to your phone", "Optional. Jarvis sends you what is better read than heard: recipes, "
+     "lists, links. Telegram, or a Home Assistant notify service if Telegram is not set up."),
+    ("events", "Conversations started by Home Assistant", "Optional. An automation fires the event "
+     "'jarvis_trigger' and Jarvis starts talking, e.g. the blueprint 'Who is there?' in deploy/home-assistant/. "
+     "Needs the Home Assistant URL and token; results go to your phone."),
     ("memory", "Memory", "Short-term context, archive search and the optional Basic Memory knowledge base."),
     ("learner", "Learner", "Background model that maintains the personality and memory files."),
     ("audio", "Microphone and sound", "Wake word, microphone and the loudness of the UI sounds."),
@@ -107,6 +112,24 @@ SETTINGS = [
     S("OPENCLAW_SESSION_IDLE_MIN", "openclaw", "New session after (min)", "After this many idle minutes the next "
       "question starts a fresh OpenClaw session.", kind="float", default="30", min=1, max=1440),
 
+    # Messages to your phone
+    S("TELEGRAM_BOT_TOKEN", "messages", "Telegram bot token", "Create a bot in Telegram with @BotFather (/newbot) and "
+      "paste its token, then connect your chat below. Give Jarvis a bot of its own: only one program can receive "
+      "a bot's messages.", kind="secret", applies="session"),
+    S("TELEGRAM_CHAT_ID", "messages", "Telegram chat", "The chat Jarvis writes to. 'Connect Telegram' below fills it in.",
+      kind="int", applies="session"),
+    S("JARVIS_HA_NOTIFY", "messages", "Home Assistant notify service", "Used when Telegram is not set up, e.g. "
+      "notify.mobile_app_<phone> from the Home Assistant app.", source="ha-notify", applies="session"),
+
+    # Conversations started by Home Assistant
+    S("JARVIS_EVENTS", "events", "Listen for events", "Off: Jarvis ignores 'jarvis_trigger' events.",
+      kind="bool", default="1"),
+    S("JARVIS_EVENT_MAX_AGE", "events", "Max wait (s)", "An event that arrives during a conversation waits at most "
+      "this long, then it is dropped.", kind="float", default="120", min=10, max=3600, applies="session"),
+    S("JARVIS_OWNER_CODEWORD", "events", "Your code word", "In a conversation started by Home Assistant (e.g. "
+      "'Who is there?') you prove with it that you are you. Jarvis never says it and it is not sent to "
+      "anyone; it is blacked out in transcripts.", kind="secret", applies="session"),
+
     # Memory
     S("JARVIS_CONTEXT_SESSIONS", "memory", "Recent conversations", "How many recent conversations go into the prompt.",
       kind="int", default="3", min=0, max=20, applies="session"),
@@ -150,7 +173,8 @@ SETTINGS = [
     S("JARVIS_ANSWER_WAIT", "session", "Answer wait (s)", "After you stop speaking, wait this long for Gemini to react "
       "before the silence counts.", kind="float", default="8", min=0, max=60, applies="session"),
     S("JARVIS_END_GRACE", "session", "End grace (s)", "After 'goodbye' the conversation closes once it has been quiet "
-      "this long; speaking before that cancels the end.", kind="float", default="2", min=0, max=30, applies="session"),
+      "this long; speaking before that cancels the end. 0 = as soon as Jarvis' last words have played.",
+      kind="float", default="0", min=0, max=30, applies="session"),
     S("JARVIS_THINKING_DELAY", "session", "Thinking sound delay (s)", "The thinking sound starts only when there is no "
       "answer this long after you stopped speaking.", kind="float", default="0.8", min=0, max=10, applies="session"),
     S("JARVIS_LOCAL_VAD", "session", "Local voice detection", "Silero VAD on the Pi, only logged for now to compare "

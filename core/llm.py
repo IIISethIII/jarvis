@@ -30,6 +30,8 @@ HOLD_MAX_S = 0.5
 # Gemini stays silent on the first words after the wake word: close after this much quiet (see _arm_quick_close).
 # Longer than JARVIS_END_GRACE because "Hey Jarvis ... ehm" followed by a thinking pause also gets no answer.
 FIRST_WORDS_GRACE_S = 5.0
+# First turn of an event session (core/events.py): makes Gemini speak first. Not archived.
+EVENT_START = "[The automation started the conversation. Speak now, following the TASK.]"
 
 
 def is_placeholder(text):
@@ -109,7 +111,7 @@ class GeminiLiveProvider:
         self.idle_timeout = float(os.getenv("JARVIS_IDLE_TIMEOUT", "15"))
         self.speech_grace = float(os.getenv("JARVIS_SPEECH_GRACE", "6"))
         self.max_speech = float(os.getenv("JARVIS_MAX_SPEECH", "45"))
-        self.end_grace = float(os.getenv("JARVIS_END_GRACE", "2"))
+        self.end_grace = float(os.getenv("JARVIS_END_GRACE", "0"))
         self.thinking_delay = float(os.getenv("JARVIS_THINKING_DELAY", "0.8"))
         self.answer_wait = float(os.getenv("JARVIS_ANSWER_WAIT", "8"))
         self.mic_gain = float(os.getenv("JARVIS_MIC_GAIN", "4"))
@@ -127,17 +129,22 @@ class GeminiLiveProvider:
             print(f"[LLM] Rotated to API Key #{self.current_key_index + 1} ({key_preview})")
             self.client = genai.Client(api_key=self.api_keys[self.current_key_index])
 
-    async def connect(self, audio_manager, hardware, dynamic_tools=None, mock_text=None, sfx=None):
-        """Connects to the Live API and handles bidirectional audio streaming."""
+    async def connect(self, audio_manager, hardware, dynamic_tools=None, mock_text=None, sfx=None, event=None):
+        """Connects to the Live API and handles bidirectional audio streaming.
+        event: a core.events.Event: Home Assistant started this session, Jarvis speaks first with restricted tools."""
+        from core import events
         self.cancel_event.clear()
         self.is_active = True
         try:
             self.load_session_settings()
         except ValueError as e:
             print(f"[LLM] Invalid setting in .env, keeping the previous values: {e}", flush=True)
+        event_session = events.EventSession(event) if event else None
+        if event and event.idle_timeout:
+            self.idle_timeout = event.idle_timeout
         self.local_vad.start_session()
         try:
-            await self._connect(audio_manager, hardware, dynamic_tools, mock_text, sfx)
+            await self._connect(audio_manager, hardware, dynamic_tools, mock_text, sfx, event_session)
         finally:
             self.local_vad.end_session()
             if self.cancel_event.is_set():
@@ -145,15 +152,23 @@ class GeminiLiveProvider:
                 audio_manager.stop_playback()
             self.is_active = False
             self.cancel_event.clear()
+            if event_session:
+                event_session.finish()
 
-    async def _connect(self, audio_manager, hardware, dynamic_tools, mock_text, sfx):
+    async def _connect(self, audio_manager, hardware, dynamic_tools, mock_text, sfx, event_session=None):
         now_dt = datetime.datetime.now()
         from core import prompt, tools
 
-        all_tools = list(tools.FUNCTION_DECLARATIONS)
-        if dynamic_tools:
-            all_tools.extend(dynamic_tools)
-        system_prompt = prompt.build({t.name for t in all_tools})
+        if event_session:
+            # Restricted: no smart home, memory or MCP tools, no personal context (see core/events.py)
+            all_tools = event_session.declarations()
+            system_prompt = prompt.build_event(event_session.event, owner_check=bool(event_session.code))
+            print(f"[LLM] Event session '{event_session.event.kind}' ({len(all_tools)} tools).", flush=True)
+        else:
+            all_tools = tools.declarations()
+            if dynamic_tools:
+                all_tools.extend(dynamic_tools)
+            system_prompt = prompt.build({t.name for t in all_tools})
 
         # user_parts / jarvis_parts collect the transcript fragments of the current turn (see _flush_turn)
         state = {
@@ -174,6 +189,7 @@ class GeminiLiveProvider:
             'background_since': None,  # Gemini reasons in the background (turn_complete with IN_PROGRESS) since then
             'answered': False,  # Gemini has spoken or called a tool in this session
             'quick_close': None,  # Gemini stayed silent on the first words: close FIRST_WORDS_GRACE_S after that
+            'event_session': event_session,  # set when Home Assistant started the session (core/events.py)
             **self._answer_gate(),
         }
         thinking_key = (self.model_name, self.thinking)
@@ -193,6 +209,12 @@ class GeminiLiveProvider:
                     print(f"[Debug] Injecting mock text: {mock_text}")
                     await session.send_client_content(
                         turns=[types.Content(role="user", parts=[types.Part.from_text(text=mock_text)])],
+                        turn_complete=True
+                    )
+                elif event_session:
+                    # Not archived as user speech: it only makes Gemini start talking
+                    await session.send_client_content(
+                        turns=[types.Content(role="user", parts=[types.Part.from_text(text=EVENT_START)])],
                         turn_complete=True
                     )
                 
@@ -357,6 +379,8 @@ class GeminiLiveProvider:
         idle = self._idle_seconds(state, audio_manager)
         if idle <= 0:
             return None
+        if self._waiting_for_first_answer(state):
+            return None  # an event session asks once more first (_nudge_due), then the normal timeout applies
         if state.get('end_requested') and idle > self.end_grace:
             return f"end_conversation, {idle:.1f}s quiet"
         quick = state.get('quick_close')
@@ -426,10 +450,37 @@ class GeminiLiveProvider:
             if self.cancel_event.is_set():
                 print("\n[LLM] Session cancelled by button.", flush=True)
                 return
+            if self._nudge_due(state, audio_manager):
+                await self._nudge(state)
+                continue
             reason = self._close_reason(state, audio_manager)
             if reason:
                 print(f"\n[LLM] {reason}. Closing session to save resources...", flush=True)
                 return
+
+    @staticmethod
+    def _waiting_for_first_answer(state):
+        """Event session in which nobody has said anything yet and Jarvis hasn't asked a second time."""
+        return bool(state.get('event_session')) and not state.get('nudged') \
+            and not state.get('last_user_speech') and not state.get('end_requested')
+
+    def _nudge_due(self, state, audio_manager):
+        from core import events
+        return self._waiting_for_first_answer(state) and \
+            self._idle_seconds(state, audio_manager) > events.NO_ANSWER_NUDGE_S
+
+    async def _nudge(self, state):
+        """Nobody answered the event session: Jarvis asks once more (Gemini only speaks on input)."""
+        from core import events
+        state['nudged'] = True
+        state['last_activity'] = time.time()  # the normal idle timeout runs from here
+        print(f"\n[LLM] No answer for {events.NO_ANSWER_NUDGE_S}s: asking once more.", flush=True)
+        try:
+            await self.session.send_client_content(
+                turns=[types.Content(role="user", parts=[types.Part.from_text(text=state['event_session'].nudge_text())])],
+                turn_complete=True)
+        except Exception as e:
+            print(f"[LLM] Follow-up question failed: {e}", flush=True)
 
     async def _send_audio_loop(self, audio_manager, session, state):
         """Reads chunks from the mic queue and sends them to Gemini."""
@@ -498,8 +549,21 @@ class GeminiLiveProvider:
         state['tool_log'].clear()
         if not user_text and not jarvis_text and not tool_log:
             return
+        source = None
+        event_session = state.get('event_session')
+        if event_session:
+            # Someone in the room, not the user: redacted (code word) and marked so the learner skips it
+            user_text, jarvis_text = event_session.add_turn(user_text, jarvis_text)
+            source = "event"
         # Fire-and-forget in a worker thread so the audio loop never waits on the SD card
-        asyncio.get_running_loop().run_in_executor(None, memory.log_interaction, user_text, jarvis_text, state['session_id'], tool_log)
+        asyncio.get_running_loop().run_in_executor(None, memory.log_interaction, user_text, jarvis_text,
+                                                   state['session_id'], tool_log, source)
+
+    @staticmethod
+    def _loggable(state, text):
+        """Transcript text for the log: the code word is redacted in event sessions."""
+        event_session = state.get('event_session')
+        return event_session.redact_text(text) if event_session else text
 
     @staticmethod
     async def _cancel_end(session, state):
@@ -671,7 +735,7 @@ class GeminiLiveProvider:
                             if self._answer_transcript(state, audio_manager, hardware, text):
                                 state['last_activity'] = time.time()
                                 state['jarvis_parts'].append(text)
-                                print(f"\n[Gemini Voice Transcript] {text}", flush=True)
+                                print(f"\n[Gemini Voice Transcript] {self._loggable(state, text)}", flush=True)
                             else:
                                 print(f"[Gemini Placeholder] {text}", flush=True)
 
@@ -686,7 +750,7 @@ class GeminiLiveProvider:
                             if state['jarvis_parts']:
                                 self._flush_turn(state)  # new user speech after an answer: previous exchange is done
                             state['user_parts'].append(input_transcription.text)
-                            print(f"\n[User Voice Transcript] {input_transcription.text}", flush=True)
+                            print(f"\n[User Voice Transcript] {self._loggable(state, input_transcription.text)}", flush=True)
                             if not state.get('is_thinking') and not state.get('tool_running'):
                                 state['thinking_at'] = time.time() + self.thinking_delay  # see _start_thinking_if_due
 
@@ -729,7 +793,10 @@ class GeminiLiveProvider:
                             audio_manager.fade_out()
                         state['is_thinking'] = False
                         state['tool_running'] = True
-                        print(f"[Debug] Received tool_call: {tool_call}")
+                        if any(fc.name == 'verify_owner' for fc in tool_call.function_calls):
+                            print("[Debug] Received tool_call: verify_owner (arguments not logged)")
+                        else:
+                            print(f"[Debug] Received tool_call: {tool_call}")
                         hardware.set_color("blue", blink=True) # Pulsing blue = thinking/executing
                         if sfx and not ending:
                             # Don't cut off a heads-up spoken right before the call ("Moment, ich frag kurz ..."),
@@ -746,6 +813,16 @@ class GeminiLiveProvider:
                             func_name = func_call.name
                             func_args = func_call.args if hasattr(func_call, 'args') else {}
                             
+                            event_session = state.get('event_session')
+                            if event_session and event_session.handles(func_name):
+                                # report_event_result / verify_owner: the code word guess is never logged or archived
+                                print(f"[LLM] Executing Tool: {func_name}")
+                                result = event_session.handle(func_name, func_args)
+                                logged = {} if func_name == 'verify_owner' else func_args
+                                state['tool_log'].append(memory.tool_entry(func_name, logged, result))
+                                function_responses.append(types.FunctionResponse(
+                                    id=func_call.id, name=func_name, response={"result": result}))
+                                continue
                             print(f"[LLM] Executing Tool: {func_name} with args {func_args}")
                             if func_name in tools.TOOL_IMPLEMENTATIONS:
                                 if func_name == 'remember':

@@ -67,6 +67,16 @@ class HomeAssistant:
             print(f"[HA Error] call_service_response failed for {domain}.{service}: {e}")
             return None
 
+    def fire_event(self, event_type, data=None):
+        """Fires an event on the Home Assistant event bus (automations can trigger on it). True on success."""
+        try:
+            r = self.session.post(f"{self.ha_url}/api/events/{event_type}", json=data or {}, timeout=5)
+            r.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            print(f"[HA Error] fire_event failed for {event_type}: {e}")
+            return False
+
     def fetch_all_states(self):
         """Fetches all states to build the context for the LLM."""
         try:

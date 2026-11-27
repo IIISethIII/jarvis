@@ -3,6 +3,7 @@ from google.genai import types
 from core.ha import HomeAssistant
 from core import calculator
 from core import memory
+from core import notify
 from core import openclaw
 from core import weather
 from core import workspace
@@ -71,6 +72,11 @@ def get_weather(location: str):
 
 def calculate(expression: str):
     return calculator.calculate(expression)
+
+def send_to_phone(message: str, title: str = "", link: str = ""):
+    """Sends a text to the user's phone (Telegram or a Home Assistant notification, see core/notify.py)."""
+    ok, detail = notify.send(message, title or None, link or None)
+    return "Sent." if ok else f"Not sent: {detail}"
 
 def manage_timer(action: str, seconds: int = 0, time: str = "", date: str = "", label: str = "", timer_id: str = ""):
     """Sets, lists or cancels timers and alarms (see core/timers.py)."""
@@ -298,6 +304,32 @@ if openclaw.enabled():
         ),
     ))
 
+# Optional: only offered while a channel is set up (see declarations), so it follows the settings per session
+SEND_TO_PHONE = types.FunctionDeclaration(
+    name="send_to_phone",
+    description="Sends a text message to the user's phone. For anything better read than heard: recipes, lists, links, addresses, phone numbers, codes, step-by-step instructions, longer answers. Also when the user asks you to send, write or note them something.",
+    parameters=types.Schema(
+        type=types.Type.OBJECT,
+        properties={
+            "message": types.Schema(
+                type=types.Type.STRING,
+                description="The full text, complete and self-contained: the user reads it later without the conversation. Plain text without Markdown, line breaks are fine.",
+            ),
+            "title": types.Schema(type=types.Type.STRING, description="Optional short title."),
+            "link": types.Schema(type=types.Type.STRING, description="Optional URL to open (recipe, route, shop, article)."),
+        },
+        required=["message"],
+    ),
+)
+
+
+def declarations():
+    """The local tools for one session. Optional ones depend on settings that may change between sessions."""
+    decls = list(FUNCTION_DECLARATIONS)
+    if notify.channel():
+        decls.append(SEND_TO_PHONE)
+    return decls
+
 def end_conversation():
     """Ends the conversation."""
     return "<END_CONVERSATION>"
@@ -314,6 +346,7 @@ TOOL_IMPLEMENTATIONS = {
     'ask_openclaw': ask_openclaw,
     'get_weather': get_weather,
     'calculate': calculate,
+    'send_to_phone': send_to_phone,
     'end_conversation': end_conversation,
 }
 

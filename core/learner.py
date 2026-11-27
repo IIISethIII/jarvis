@@ -252,7 +252,8 @@ def _sessions_from_archive(since=None):
     sessions = {}
     for e in entries:
         sid = e.get("session")
-        if not sid:
+        # event sessions: a stranger may have talked, so nothing from them goes into the workspace
+        if not sid or e.get("source") == "event":
             continue
         if since and e.get("timestamp", "") < since:
             continue

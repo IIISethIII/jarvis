@@ -44,6 +44,7 @@ STUBS = {
     "set_speaker_volume": "Volume set.",
     "get_pi_temperature": "Pi Temperature: temp=45.0'C",
     "ask_openclaw": "Test: no answer available in this test.",
+    "send_to_phone": "Sent.",
 }
 REAL = {"remember", "load_skills", "search_archive", "get_ha_details", "get_weather", "calculate", "end_conversation"}
 REAL_MCP = {"bm_search", "bm_read"}  # read-only MCP tools, run for real unless the scenario stubs them
@@ -181,7 +182,7 @@ def run_scenario(path, args, log):
         import_text(open(os.path.join(base, imp), encoding="utf-8").read(), source=f"import {imp}")
     failures += check_files(sc.get("after_import"), "after import")
 
-    declarations = list(tools.FUNCTION_DECLARATIONS) + args.dynamic_tools
+    declarations = tools.declarations() + args.dynamic_tools
     keys = learner._api_keys()
     model = os.getenv("GEMINI_LIVE_MODEL", "gemini-3.8-live")
     thinking = os.getenv("JARVIS_THINKING", "").strip().lower()

@@ -41,7 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from core import envfile, settings_schema as schema, status, wakewords, workspace  # noqa: E402  (stdlib-only modules)
+from core import envfile, notify, settings_schema as schema, status, wakewords, workspace  # noqa: E402  (stdlib-only modules)
 
 ENV_PATH = envfile.DEFAULT_PATH
 STATIC_DIR = os.path.join(ROOT, "web", "static")
@@ -70,6 +70,7 @@ class App:
         self.restart_pending = None  # {"since": ts} while 'restart when idle' waits
         self.failed_logins = {}  # ip -> [timestamps]
         self.cache = {}  # name -> (time, value)
+        self.telegram_pair = None  # {"token", "code", "offset", "since"} while a Telegram chat is being connected
 
     def busy(self):
         with self.lock:
@@ -700,6 +701,72 @@ def test_mcp(url, kind):
     return {"ok": False, "detail": "reachable, but it doesn't speak MCP over SSE (try type 'stateless')"}
 
 
+TEST_MESSAGE = "Test message from the {name} web interface."
+
+
+def test_messages(get):
+    """Sends a real test message on each configured channel."""
+    name = get("JARVIS_NAME")
+    token, chat, service = get("TELEGRAM_BOT_TOKEN"), get("TELEGRAM_CHAT_ID"), get("JARVIS_HA_NOTIFY")
+    results = []
+    if token:
+        bot, err = notify.bot_name(token)
+        if err:
+            results.append({"label": "Telegram", "ok": False, "detail": err})
+        elif not chat:
+            results.append({"label": "Telegram", "ok": False, "detail": f"bot @{bot} works, now connect your chat"})
+        else:
+            err = notify.send_telegram(token, chat, TEST_MESSAGE.format(name=name))
+            results.append({"label": "Telegram", "ok": not err, "detail": err or f"@{bot} sent a test message"})
+    if service:
+        err = notify.send_ha(get("HA_URL"), get("HA_TOKEN"), service, TEST_MESSAGE.format(name=name), name)
+        note = " (not used while Telegram is set up)" if token and chat else ""
+        results.append({"label": "Home Assistant", "ok": not err, "detail": err or f"{service} called{note}"})
+    return results or [{"label": "Messages", "ok": False,
+                        "detail": "set up Telegram or a Home Assistant notify service first"}]
+
+
+# --- Connecting a Telegram chat -----------------------------------------------------------------
+# 'Connect' asks Telegram for the bot's name and shows a t.me link with a one-time code; pressing Start in
+# Telegram sends '/start <code>' to the bot. The page then polls /api/telegram/check, which reads the bot's
+# updates until that message arrives, and fills in its chat id. The token stays on the server.
+
+PAIR_TTL_S = 600
+
+
+def telegram_pair_start(typed):
+    token = form_values(typed)("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise HTTPError(400, "enter the bot token first")
+    bot, err = notify.bot_name(token)
+    if err:
+        raise HTTPError(400, err)
+    code = secrets.token_hex(4)
+    with app.lock:
+        app.telegram_pair = {"token": token, "code": code, "offset": None, "since": time.time()}
+    return {"bot": bot, "code": code, "link": f"https://t.me/{bot}?start={code}"}
+
+
+def telegram_pair_check():
+    with app.lock:
+        pair = dict(app.telegram_pair) if app.telegram_pair else None
+    if not pair or time.time() - pair["since"] > PAIR_TTL_S:
+        raise HTTPError(409, "no connection attempt is running: click 'Connect Telegram' again")
+    chat, offset, err = notify.find_start(pair["token"], pair["code"], pair["offset"])
+    with app.lock:
+        if app.telegram_pair and app.telegram_pair["code"] == pair["code"]:
+            app.telegram_pair["offset"] = offset
+            if chat:
+                app.telegram_pair = None
+    if err:
+        return {"chat": None, "error": err}
+    if chat:
+        name = env().get("JARVIS_NAME") or schema.BY_KEY["JARVIS_NAME"].default
+        notify.send_telegram(pair["token"], chat["id"], f"{name} is connected: messages from {name} arrive in this chat.")
+        print(f"[Web] Telegram chat connected ({chat['id']}).", flush=True)
+    return {"chat": chat, "error": None}
+
+
 def form_values(typed):
     """get(key): the value typed into the form (saved or not), else the saved one, else the default."""
     values = env()
@@ -725,6 +792,8 @@ def connection_test(what, typed):
         return test_home_assistant(get("HA_URL"), get("HA_TOKEN"))
     if what == "openclaw":
         return test_openclaw(get("OPENCLAW_URL"), get("OPENCLAW_TOKEN"))
+    if what == "messages":
+        return test_messages(get)
     raise HTTPError(400, f"nothing to test for {what!r}")
 
 
@@ -825,8 +894,29 @@ def _openclaw_agents_source(get):
     return [{"value": i.split("/", 1)[1], "label": i.split("/", 1)[1]} for i in ids if i.startswith("openclaw/")]
 
 
+def _ha_notify_source(get):
+    url, token = get("HA_URL"), get("HA_TOKEN")
+    if not url or not token:
+        raise OptionsError("enter the Home Assistant URL and token first")
+    code, text, err = http_probe("GET", f"{url.rstrip('/')}/api/services", {"Authorization": f"Bearer {token}"})
+    if err:
+        raise OptionsError(f"Home Assistant {err}")
+    if code != 200:
+        raise OptionsError(f"Home Assistant answered HTTP {code}")
+    try:
+        services = next((d.get("services") or {} for d in json.loads(text) if d.get("domain") == "notify"), {})
+    except (ValueError, AttributeError, TypeError):
+        raise OptionsError("Home Assistant sent no service list")
+    # send_message needs a notify entity as target; the per-device services take a plain message
+    names = sorted(n for n in services if n != "send_message")
+    if not names:
+        raise OptionsError("Home Assistant has no notify services (install the app on your phone)")
+    return [{"value": f"notify.{n}", "label": f"notify.{n}"} for n in names]
+
+
 # source -> (settings the list depends on, so the page reloads it when they change; loader(get))
 OPTION_SOURCES = {
+    "ha-notify": (("HA_URL", "HA_TOKEN"), _ha_notify_source),
     "gemini-live": (("GEMINI_KEYS",), _gemini_source("live")),
     "gemini-text": (("GEMINI_KEYS",), _gemini_source("text")),
     "gemini-embed": (("GEMINI_KEYS",), _gemini_source("embed")),
@@ -1022,7 +1112,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                    ("GET", "/api/mcp"): self.api_mcp, ("PUT", "/api/mcp"): self.api_mcp_save,
                    ("POST", "/api/mcp/test"): self.api_mcp_test,
                    ("GET", "/api/onboarding"): self.api_onboarding,
-                   ("POST", "/api/onboarding"): self.api_onboarding_queue}
+                   ("POST", "/api/onboarding"): self.api_onboarding_queue,
+                   ("POST", "/api/telegram/pair"): self.api_telegram_pair,
+                   ("POST", "/api/telegram/check"): self.api_telegram_check}
         route = (method, path)
         if route in public:
             return public[route]()
@@ -1109,6 +1201,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def api_options(self):
         body = self._body()
         self._json(options_payload(body.get("source"), body.get("values")))
+
+    def api_telegram_pair(self):
+        self._json(telegram_pair_start(self._body().get("values")))
+
+    def api_telegram_check(self):
+        self._json(telegram_pair_check())
 
     def api_workspace(self):
         self._json(workspace_payload())

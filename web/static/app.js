@@ -136,7 +136,8 @@ function showAuth(passwordSet) {
 function stopTimers() {
   clearTimeout(S.pollTimer);
   clearInterval(S.logTimer);
-  S.pollTimer = S.logTimer = null;
+  clearTimeout(S.pairTimer);
+  S.pollTimer = S.logTimer = S.pairTimer = null;
 }
 
 function renderLogin() {
@@ -418,6 +419,7 @@ function renderSettings() {
     h("h2", { text: g.title }),
     h("p", { class: "desc", text: g.description }),
     g.settings.map(field),
+    g.id === "messages" ? telegramConnect() : null,
     TESTABLE[g.id] ? testBox(g.id) : null,
     g.id === "web" ? passwordForm() : null));
   if (S.settings.other.length) cards.push(otherKeys(S.settings.other));
@@ -794,15 +796,23 @@ const TESTABLE = {
   gemini: ["GEMINI_KEYS", "GEMINI_LIVE_MODEL"],
   home_assistant: ["HA_URL", "HA_TOKEN"],
   openclaw: ["OPENCLAW_URL", "OPENCLAW_TOKEN"],
+  messages: ["TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID", "JARVIS_HA_NOTIFY", "HA_URL", "HA_TOKEN", "JARVIS_NAME"],
 };
+const TEST_LABEL = { messages: "Send test message" };
+
+function typedValues(keys) {
+  // values typed into the form but not saved yet; the server falls back to the saved ones
+  const values = {};
+  for (const key of keys) if (typeof S.changes[key] === "string") values[key] = S.changes[key];
+  return values;
+}
 
 function testBox(group) {
   const out = h("ul", { class: "list small", style: "margin-top:8px" });
-  const btn = h("button", { class: "btn", type: "button", text: "Test connection", onclick: async () => {
+  const btn = h("button", { class: "btn", type: "button", text: TEST_LABEL[group] || "Test connection", onclick: async () => {
     btn.disabled = true;
     out.replaceChildren(h("li", { class: "muted", text: "Testing…" }));
-    const values = {};
-    for (const key of TESTABLE[group]) if (typeof S.changes[key] === "string") values[key] = S.changes[key];
+    const values = typedValues(TESTABLE[group]);
     try {
       const r = await api("POST", "/api/test", { what: group, values });
       out.replaceChildren(...r.results.map((x) => h("li", {},
@@ -814,6 +824,69 @@ function testBox(group) {
   } });
   return h("div", { class: "field" },
     h("div", {}, h("div", { class: "help", text: "Uses the values typed above, saved or not." })),
+    h("div", {}, btn, out));
+}
+
+// Connecting a Telegram chat: the server shows a t.me link with a one-time code, the user presses Start in
+// Telegram, and the page polls until the bot has seen that message. The chat id then goes into the form.
+const PAIR_POLL_MS = 2000;
+const PAIR_WAIT_MS = 180000;
+
+function telegramConnect() {
+  const out = h("div", { class: "small" });
+  const fail = (msg) => out.replaceChildren(h("p", { class: "error", text: msg }));
+
+  function useChat(chat) {
+    const id = String(chat.id);
+    const f = S.fields.TELEGRAM_CHAT_ID;
+    const input = f && f.el.querySelector("input");
+    if (input) input.value = id;
+    const stored = findItem("TELEGRAM_CHAT_ID")?.value ?? "";
+    setChange("TELEGRAM_CHAT_ID", id === stored ? undefined : id);
+    out.replaceChildren(h("p", {}, h("span", { class: "dot ok" }), `Connected with ${chat.name}. `,
+      dirty() ? h("strong", { text: "Save to keep it." }) : "Nothing else to save."));
+  }
+
+  const btn = h("button", { class: "btn", type: "button", text: "Connect Telegram", onclick: async () => {
+    clearTimeout(S.pairTimer);
+    btn.disabled = true;
+    out.replaceChildren(h("p", { class: "muted", text: "Asking Telegram…" }));
+    let r;
+    try {
+      r = await api("POST", "/api/telegram/pair", { values: typedValues(["TELEGRAM_BOT_TOKEN"]) });
+    } catch (e) {
+      if (e.status !== 401) fail(e.message);
+      return;
+    } finally { btn.disabled = false; }
+    const waiting = h("p", { class: "muted", text: "Waiting for your message…" });
+    out.replaceChildren(
+      h("p", {}, "Open ", h("a", { href: r.link, target: "_blank", rel: "noopener", text: `t.me/${r.bot}` }),
+        " on your phone and press Start. ",
+        h("span", { class: "muted", text: `Or send @${r.bot} the message ${r.code}` })),
+      waiting);
+    const until = Date.now() + PAIR_WAIT_MS;
+    const poll = async () => {
+      if (!document.body.contains(out)) return;  // the page was left or re-rendered
+      try {
+        const c = await api("POST", "/api/telegram/check", {});
+        if (c.chat) return useChat(c.chat);
+        if (c.error) return fail(c.error);
+      } catch (e) {
+        if (e.status !== 401) fail(e.message);
+        return;
+      }
+      if (Date.now() > until) {
+        waiting.textContent = "No message arrived. Click 'Connect Telegram' to try again.";
+        return;
+      }
+      S.pairTimer = setTimeout(poll, PAIR_POLL_MS);
+    };
+    S.pairTimer = setTimeout(poll, PAIR_POLL_MS);
+  } });
+
+  return h("div", { class: "field" },
+    h("div", {}, h("label", { text: "Connect Telegram" }),
+      h("div", { class: "help", text: "Links the chat with your bot: Jarvis only writes to this chat." })),
     h("div", {}, btn, out));
 }
 

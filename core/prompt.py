@@ -128,3 +128,38 @@ def live_context(include_ha=True):
 
 def build(tool_names, include_ha=True):
     return static_prompt(tool_names) + live_context(include_ha)
+
+
+def build_event(event, owner_check=False, now=None):
+    """Prompt of an event session (core/events.py): the event rules, the personality, the task and its skills.
+
+    Leaves out on purpose what a stranger in the room must not get at: house rules, USER, MEMORY, recent
+    conversations, the Home Assistant overview and the tool guides."""
+    from core import events
+    now = now or datetime.datetime.now()
+    time_str = f"{WEEKDAYS[now.weekday()]}, {now.strftime('%Y-%m-%d %H:%M:%S')}"
+    workspace.ensure()
+    owner = event.owner_name
+    sections = [render(_read(os.path.join(PROMPTS_DIR, "event.md")).strip(), time=time_str, owner=owner)]
+    soul = workspace.prompt_text("SOUL")
+    if _has_entries(soul):
+        sections.append(f"=== PERSONALITY ===\n{soul}")
+    if owner_check:
+        sections.append(render(_read(os.path.join(PROMPTS_DIR, "event-owner.md")).strip(),
+                               owner=owner, OWNER=owner.upper()))
+    # The task comes from Home Assistant: inserted as it is, not formatted (braces are not placeholders there)
+    sections.append(f"=== TASK ===\n{event.prompt}")
+    by_name = {s["name"]: s for s in workspace.list_skills()}
+    rules = [by_name[n]["body"].strip() for n in event.skills if n in by_name]
+    missing = [n for n in event.skills if n not in by_name]
+    if missing:
+        print(f"[Prompt] Event skills not found: {', '.join(missing)}", flush=True)
+    if rules:
+        sections.append("=== RULES ===\n" + "\n\n".join(rules))
+    earlier = events.last_result(event.kind)
+    if earlier:
+        minutes, message = earlier
+        sections.append(f"=== EARLIER ===\nThe same automation started a conversation {minutes:.0f} min ago. Result: "
+                        f"{message}\nIt may be the same person or someone else: don't assume, ask who it is. Only "
+                        f"if they say they are the same person, skip your introduction and ask what brings them back.")
+    return "\n\n".join(sections) + "\n"

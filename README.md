@@ -17,6 +17,7 @@ core/
   tools.py           local tools (call_ha_service, set_speaker_volume, get_weather, core memory, archive search, ...)
   weather.py         weather for any place: Open-Meteo, in Germany DWD radar and warnings (Bright Sky), no API key
   calculator.py      exact calculator and date math for the tool calculate (ast whitelist, no eval)
+  notify.py          messages to your phone (tool send_to_phone): Telegram bot or a Home Assistant notification
   mcp.py             MCP client; servers in mcp_config.json
   audio.py           mic process, playback, ALSA mixer setup
   wake.py            openWakeWord detector
@@ -68,7 +69,8 @@ A small settings page, made to set Jarvis up without a terminal. It needs only t
 
 - **Status:** conversation, alarm, learner, MCP servers, timers, RAM; restart now or as soon as Jarvis is idle.
 - **Settings:** every `.env` setting as a form with defaults, ranges and help texts, connection tests for
-  Gemini keys, Home Assistant and OpenClaw, and a hint which changes still need a restart.
+  Gemini keys, Home Assistant and OpenClaw, and a hint which changes still need a restart. Connect a Telegram
+  chat here (see below).
 - **Workspace:** personality, house rules, what Jarvis knows about you, skills; with the change history and undo.
 - **Tools:** MCP servers (add, test, hide tools).
 - **Log:** the journal of the service, with secrets masked.
@@ -87,6 +89,43 @@ systemd listens on port 80 and starts the server on the first request. The serve
 - Secrets (API keys, tokens) are write-only on the page: it shows whether they are set and their last characters.
 - Forgot the password: `venv/bin/python -m web.server --set-password` on the Pi.
 - Try it on any machine without touching your `.env`: `python3 -m web.server --port 8080 --env-file /tmp/test.env`.
+
+## Messages to your phone (optional)
+
+Jarvis sends you what is better read than heard, such as recipes, lists and links, with the tool `send_to_phone`.
+Without a channel the tool is off.
+
+- **Telegram:**
+  1. In Telegram, ask [@BotFather](https://t.me/BotFather) for a new bot (`/newbot`) and copy its token.
+  2. On the web interface (Settings → Messages to your phone), paste the token and click **Connect Telegram**.
+  3. Open the link it shows and press Start. The page fills in the chat id; save it.
+  4. **Send test message** checks the whole way.
+
+  Give Jarvis a bot of its own, because only one program can receive a bot's messages. Jarvis only writes to
+  the connected chat.
+- **Home Assistant:** without Telegram, pick a notify service such as `notify.mobile_app_<phone>` from the
+  Home Assistant app.
+
+The settings apply from the next conversation, no restart needed.
+
+## Conversations started by Home Assistant (optional)
+
+An automation can make Jarvis start talking. It fires the event `jarvis_trigger` with a `prompt` (the task), and
+Jarvis listens for it over Home Assistant's WebSocket API. In such a conversation Jarvis has no smart home,
+memory or web tools and knows nothing personal about you, because a stranger may be in the room. At the end it
+sends you the result with the person's own words, using the channel above.
+
+- **Blueprint "Who is there?"** (`deploy/home-assistant/jarvis_who_is_there.yaml`):
+  - **When:** a presence sensor turns on while everybody has been away for a while. It checks again after a short
+    delay, in case you just came home before your phone reported it.
+  - **What happens:** Jarvis asks who is there and sends you the answer.
+  - **Inputs:** optional quiet hours, a message when nobody answers, and house rules as a Jarvis skill (e.g. ask
+    someone who fetches a key when it comes back).
+  - **Install:** import it in Home Assistant with its GitHub URL (Settings → Automations → Blueprints → Import).
+- **Your code word** (web interface → Settings → Conversations started by Home Assistant): say it, and Jarvis
+  knows it's you and sends nothing. Jarvis never says it, and it is blacked out in transcripts.
+- **Try it** without a sensor: Home Assistant → Developer tools → Events, event type `jarvis_trigger`, data e.g.
+  `prompt: Say hello and ask who is there.`
 
 ## Development
 

@@ -26,10 +26,36 @@ Previous architecture (Live front-end + REST "slow brain" + Mem0) is tag `v2-fin
      - As of 2026-11-25 the background turn fails server-side for all our keys (the second turn says "a system error occurred", text and audio input alike, every level). Simple questions get a direct answer, but every request that needs a tool goes through that background path, so no tool call ever reaches Jarvis: the extended model is unusable for Jarvis for now (live test on the Pi, `high`).
    - **Local VAD** (`core/vad.py`, logging only so far): Silero (`silero_vad.onnx`, ships with openWakeWord, runs on onnxruntime) scores each 32 ms chunk that `_send_audio_loop` sends, in a worker thread and only during sessions. It logs `[VAD] Local speech` segments, compares each Gemini segment at ACTIVITY_END, warns `server VAD stuck?` when Gemini reports speech the mic hasn't had for 2 s, and prints a summary with inference time per session. Purpose: calibrate `JARVIS_VAD_THRESHOLD` before the local VAD drives the timer (Gemini's VAD sometimes reports speech in a quiet room and never ends it). Off with `JARVIS_LOCAL_VAD=0` or when openWakeWord/onnxruntime are missing.
 4. The session also ends after `end_conversation` or when the server sends GoAway. Then the sleep sound plays, LEDs go off, and the loop returns to idle.
-   - `end_conversation` (tool result `"<END_CONVERSATION>"`) doesn't close right away. It sets `end_requested`, and `_inactivity_loop` closes once it has been quiet for `JARVIS_END_GRACE` (2 s). User speech before that (VAD start or a transcript) cancels the end: server VAD sometimes cuts a sentence ("Perfekt. Sonst noch was zu"), and Gemini then took the fragment for a goodbye.
+   - `end_conversation` (tool result `"<END_CONVERSATION>"`) doesn't close right away. It sets `end_requested`, and `_inactivity_loop` closes once it has been quiet for `JARVIS_END_GRACE`. User speech before that (VAD start or a transcript) cancels the end: server VAD sometimes cuts a sentence ("Perfekt. Sonst noch was zu"), and Gemini then took the fragment for a goodbye.
+     - Default 0 s since 2026-11-27 (the maintainer's choice: closing right after the goodbye matters more). The session then closes as soon as Jarvis' last words have played, so that protection is off unless the grace is raised again.
    - The call gets no tool response unless the end is cancelled (`_cancel_end`): any response makes Gemini talk again, and it once spoke a literal "<no speech>".
    - It is the only tool call without sounds: no thinking loop, no success sound, and the thinking loop started by the user's words is stopped. Only the sleep sound plays when the session closes.
-5. Timers and alarms (`core/timers.py`, tool `manage_timer`) run in their own thread and persist in `data/timers.json`. A firing timer cancels a running session and loops `assets/sounds/alarm.pcm` with an orange pulsing LED until the wake word, the button or `JARVIS_ALARM_TIMEOUT` (120 s) stops it. While it rings, the wake word only stops the alarm and does not start a session.
+5. **Event sessions** (`core/events.py`, `core/ha_events.py`): Home Assistant can start a conversation.
+   - **Receiving:** an automation fires `jarvis_trigger` (data: `prompt`, optional `id`, `kind`, `owner`, `title`,
+     `skills`, `silence_message`, `idle_timeout`; documented in `core/events.py`). A thread holds a WebSocket to
+     HA (`subscribe_events`, reconnects by itself) and queues it.
+   - **Starting:** the idle loop starts the session like a wake word, with a white LED, and Jarvis speaks first
+     (`EVENT_START` turn). A trigger that waited longer than `JARVIS_EVENT_MAX_AGE` behind a conversation, or
+     arrives while an alarm rings, is answered with a result event instead.
+   - **Restricted on purpose** (a stranger may be in the room): only `report_event_result`, `verify_owner` and
+     `end_conversation`; no MCP. The prompt is `prompt.build_event` (`prompts/event.md`, SOUL, the task, the
+     named workspace skills, the previous result of the same `kind` within 30 min), without house rules,
+     USER, MEMORY, recent conversations or HA. Don't add personal context there.
+   - **Owner code word** (`JARVIS_OWNER_CODEWORD`): never in a prompt. Gemini passes what it heard to
+     `verify_owner`, and the code compares it, at most 3 guesses. The word is redacted in the log, the archive,
+     the report and the result. The arguments of `verify_owner` are never logged.
+   - **No answer:** Gemini Live only speaks on input. If nobody has said anything for `events.NO_ANSWER_NUDGE_S`
+     (30 s) after Jarvis spoke, `_nudge` sends a text turn and Jarvis asks once more ("Anyone there? I'll tell
+     the owner either way"). Until then the session doesn't close; after it the normal idle timeout applies.
+   - **End:** `EventSession.finish()` sends the report plus the person's own words (added by code, so nobody can
+     dictate a harmless report) via `core/notify.py`, or `silence_message` if nobody spoke. Nothing is sent when
+     the owner identified. It always fires `jarvis_trigger_result` back to HA.
+   - **Archive:** turns are marked `source: "event"`. The learner skips them, and recent conversations and
+     archive search label the speaker "Person in the room".
+   - **Blueprint** "Who is there?": `deploy/home-assistant/jarvis_who_is_there.yaml`.
+   - **Test** without a sensor: HA → Developer tools → Events → fire `jarvis_trigger` with
+     `prompt: ...` (Jarvis speaks out loud).
+6. Timers and alarms (`core/timers.py`, tool `manage_timer`) run in their own thread and persist in `data/timers.json`. A firing timer cancels a running session and loops `assets/sounds/alarm.pcm` with an orange pulsing LED until the wake word, the button or `JARVIS_ALARM_TIMEOUT` (120 s) stops it. While it rings, the wake word only stops the alarm and does not start a session.
 
 Important behaviour:
 - **Half-duplex:** `AudioManager.get_audio_chunk` drops mic input while audio is playing, so the user cannot interrupt by voice.
@@ -78,6 +104,16 @@ Important behaviour:
   - Limits on length, exponents, factorials and result size keep every input under a millisecond, so no thread or timeout is needed. Keep that true for new functions.
   - The parameter description Gemini sees is `calculator.SYNTAX`; a new function goes into `FUNCS` and `SYNTAX` (a unit test checks this).
   - Test off the Pi with `python3 -m core.calculator "1249 * 19 / 100"`.
+- **Messages to the phone** (`core/notify.py`, tool `send_to_phone`, guide `prompts/guides/send-to-phone.md`):
+  - Telegram bot (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`), else a HA notify service (`JARVIS_HA_NOTIFY`).
+  - `tools.declarations()` offers the tool only while one of them is set up. It is checked per session, like the
+    settings (`applies="session"`). Use `tools.declarations()`, not `FUNCTION_DECLARATIONS`, for a session's tools.
+  - Standard library only: the web interface uses the same module for its test button and for connecting a chat.
+  - Plain text without `parse_mode`, so nothing needs escaping; above 4096 chars it is split at line breaks.
+  - The Bot API URL contains the token: never log or return it.
+  - **Jarvis only sends for now.** Connecting a chat (web UI) reads the bot's updates (`getUpdates`) until
+    `/start <code>` arrives. A second program polling the same bot breaks that (Telegram answers 409).
+  - Test off the Pi with `python3 -m core.notify "Hallo"`.
 - **Home Assistant context** (`core/ha_context.py`): the prompt only gets a compact overview, one line per entity with state, unit and short attributes, grouped by room if HA has areas, plus service names per domain. A trailing `+` marks more data; `+forecast`, `+items` and `+events` (label in `RESPONSE_SERVICES`) tell Jarvis which entities have a forecast, list items or events, so it takes those from HA instead of the web or OpenClaw. `JARVIS_HA_EXCLUDE` hides entities from the overview and the search. The tool `get_ha_details` returns the full attributes, the current state, a search over all entities, the parameters of a domain's services, and for `todo`/`weather`/`calendar` entities the service response (items, daily forecast, events). Above `JARVIS_HA_CONTEXT_CHARS` (30000) the overview drops attributes, then read-only entities. Don't put full attribute dumps back into the prompt: single sensors (forecasts, canteen menus) are 10–30k chars each.
   - `call_ha_service` retries a call that HA rejects with HTTP 400 with `?return_response` and returns the data, since services that return data (`weather.get_forecasts`, `todo.get_items`, …) fail without it. An unreachable HA (`ha_client.last_status` None) is not retried.
 - Local tools run **synchronously inside the async receive loop** and block audio meanwhile. Wrap slow ones (`asyncio.to_thread`).
@@ -149,8 +185,12 @@ Restarting Jarvis is expensive. On the reference Pi it takes **~45 s** until `[I
 ## Web interface
 
 - `web/server.py` + `web/static/` (plain HTML/CSS/JS, no build step). Started by systemd socket activation (`deploy/jarvis-web.socket`, port 80) and exits after `JARVIS_WEB_IDLE_MIN` idle minutes, so it uses no RAM while nobody has the page open (~16 MB PSS while running).
-- **Standard library only**, and it may import only the stdlib-only core modules `envfile`, `settings_schema`, `status`, `wakewords` and `workspace`. Never import `core.llm`, `core.mcp` & co. there: they pull in google-genai and the MCP client (tens of MB).
+- **Standard library only**, and it may import only the stdlib-only core modules `envfile`, `notify`, `settings_schema`, `status`, `wakewords` and `workspace`. Never import `core.llm`, `core.mcp` & co. there: they pull in google-genai and the MCP client (tens of MB).
 - It learns Jarvis' state only from `data/.status.json`, reads the log with `journalctl -u jarvis` and restarts with `sudo -n systemctl restart --no-block jarvis` (`deploy/jarvis-web.sudoers`).
+- Telegram is connected on the Settings page: `POST /api/telegram/pair` checks the token (`getMe`) and returns
+  a `t.me/<bot>?start=<code>` link. The page then polls `POST /api/telegram/check` until the code arrives, and
+  puts the chat id into the form. The token and code live only in the server process (`app.telegram_pair`,
+  10 min).
 - Pages: Status (incl. timers), Settings (with connection tests for Gemini, HA, OpenClaw, and dropdowns from `POST /api/options`, which use the values typed into the form like the tests do), Workspace (edit SOUL/AGENTS/USER/MEMORY and skills, history, undo), Tools (MCP servers in `core/mcp_config.json`, with a connection test), Log.
 - The setup assistant saves settings, queues the "about you" answers in `data/workspace/.onboarding.json` and restarts Jarvis. The learner thread in Jarvis runs them as an onboarding run (no second process with google-genai on the Pi); on quota errors it retries after 30 min.
 - `deploy/install.sh` installs everything for the current user and path (dry run: `--dry-run`).
